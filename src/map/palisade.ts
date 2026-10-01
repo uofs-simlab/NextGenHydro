@@ -1,6 +1,6 @@
 import type { FeatureCollection } from "geojson"
 import type { GeoJSONSource, Map } from "maplibre-gl"
-import type { BasemapId } from "../types"
+import type { BasemapId } from "../types.ts"
 
 export { PALISADE_GAGE } from "./gageId.ts"
 
