@@ -1,13 +1,13 @@
 # Installation
 
-Programs this Mac needs before NextGenHydro Python can start a DataStreamCLI run. Docker images are pulled on the first run. They are not separate installs.
+Programs you need before NextGenHydro can start a DataStreamCLI run. Docker images are pulled on the first run. They are not separate installs.
 
 The app expects these folders side by side on the Desktop:
 
-- `NextGenHydroPython` — this app
-- `NexGen/datastreamcli` — DataStreamCLI
+- `NextGenHydro` — this app
+- `your-path/datastreamcli` — DataStreamCLI
 
-The app starts `NexGen/datastreamcli/scripts/datastream` and writes output folders under that repo, for example `NexGen/datastreamcli/data/my-run`.
+The app starts `your-path/datastreamcli/scripts/datastream` and writes output folders under that repo, for example `your-path/datastreamcli/data/my-run`.
 
 ## Required
 
@@ -25,16 +25,10 @@ Palisade (`09106150`) uses a published geopackage. Every other USGS gage uses th
 
 The geopackage is written to `~/ngiab_preprocess_output/gage-<id>/config/gage-<id>_subset.gpkg`. A later run for the same gage reuses that file. The first subset downloads hydrofabric 2.2 into `~/.ngiab/hydrofabric`. DataStreamCLI receives the file with `-g` and does not call `hfsubset`.
 
-## Only if you use them
-
-| Program | When |
-|---|---|
-| AWS CLI (`aws`) | Only for DataStreamCLI options that read or write `s3://` paths. The app’s usual runs download by URL and do not need it. |
-| An OpenAI API key | Optional. One line in `NextGenHydroPython/.openai-key.local`. If that file is missing, the server reads `NextGenHydro/.openai-key.local`, then `OPENAI_API_KEY`. If none is present, **Ask** uses the local reader in `nextgenhydro/nlp.py`. |
 
 ## Start the app
 
-From `NextGenHydroPython`:
+From `NextGenHydro`:
 
 ```bash
 python3 app.py
