@@ -1,6 +1,6 @@
-# NextGenHydro Python notes
+# NextGenHydroNotes_UnderDevelopment
 
-Notes for the Python app: the map, the request panel, the agent, and how a run is handed to DataStreamCLI. Continue new work in this folder.
+Notes for the app: the map, the request panel, the agent, and how a run is handed to DataStreamCLI. Continue new work in this folder.
 
 ## What the app does
 
@@ -12,15 +12,15 @@ After **Ask**:
 2. The result is a new JSON plan. A new sentence does not keep a gage, dates, forcing, realization, or output folder from the previous sentence.
 3. The plan keys are `location`, `gage`, `start`, `end`, `forcing`, `realization`, and `outputDir`.
 4. A key stays empty when the sentence does not supply it, except the two choices below.
-5. If the sentence names a place and no gage digits, the map lists the nearest NextGen stations. Picking one fills `gage`.
+5. If the sentence names a place and no gage digits, the map lists the 5 nearest NextGen stations. Picking one fills `gage`.
 
-The OpenAI key is not stored in source. It is one line in `NextGenHydroPython/.openai-key.local`. The server then tries `NextGenHydro/.openai-key.local`, then the `OPENAI_API_KEY` environment variable.
+
 
 ## When the sentence does not name a model
 
 A sentence that asks to run or simulate, and does not name CFE, Noah-OWP, LSTM, or t-route, still needs a realization. The agent chooses **CFE, PET, Noah-OWP, and t-route** (`realization_sloth_nom_cfe_pet_troute.json`).
 
-A sentence that names a model keeps that stack. Noah-OWP, CFE, or PET without t-route uses `realization_sloth_nom_cfe_pet.json`. There is no CFE-only or Noah-OWP-only realization. (For NOW)
+A sentence that names a model keeps that stack. Noah-OWP, CFE, or PET without t-route uses `realization_sloth_nom_cfe_pet.json`. There is no CFE-only or Noah-OWP-only realization. (**For NOW**)
 
 A sentence that says not to run, such as "do not run the simulation", leaves `realization` empty even if the word simulation appears. `outputDir` also stays empty unless the sentence names a folder.
 
