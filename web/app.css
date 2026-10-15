@@ -1,0 +1,38 @@
+:root {
+  color-scheme: light;
+  --ink: #1a2330;
+  --paper: #f6f3ec;
+  --water: #1a6b84;
+  --deep: #0d3342;
+  font-family: "Avenir Next", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--paper); color: var(--ink); }
+.shell { display: grid; grid-template-columns: 220px 1fr 420px; height: 100%; }
+.nav, .panel { padding: 20px; overflow: auto; }
+.nav { background: var(--deep); color: white; }
+.nav button, .panel button, .gage {
+  border: 0; border-radius: 999px; padding: 8px 12px; margin: 4px 4px 4px 0; cursor: pointer;
+}
+.nav button { background: transparent; color: white; display: block; width: 100%; text-align: left; }
+.nav button.is-on { background: white; color: var(--deep); }
+.panel button, .gage { background: var(--water); color: white; }
+.map-stage { position: relative; min-width: 0; }
+#map { position: absolute; inset: 0; }
+.legend, .status, #plan, #log, #command, #note {
+  white-space: pre-wrap;
+}
+.legend {
+  position: absolute; left: 16px; bottom: 16px; background: var(--deep); color: white;
+  padding: 12px 14px; border-radius: 16px; max-width: 280px;
+}
+label { display: block; margin: 10px 0; font-size: 14px; }
+input, textarea, select { width: 100%; margin-top: 4px; padding: 8px; border-radius: 10px; border: 1px solid rgba(13,51,66,.2); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#plan, #log, .status { background: #111; color: #f4f1ea; padding: 12px; border-radius: 12px; overflow: auto; }
+#log { max-height: 240px; }
+.kicker { letter-spacing: .12em; text-transform: uppercase; font-size: 12px; opacity: .7; }
+.outlet-dot { width: 14px; height: 14px; border-radius: 50%; background: #c45c26; border: 2px solid white; }
+.gage-pin { width: 28px; height: 28px; border-radius: 50%; border: 0; background: white; color: var(--deep); font-weight: 700; }
+.gage-pin.is-selected { background: #c45c26; color: white; }

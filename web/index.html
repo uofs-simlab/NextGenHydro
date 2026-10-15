@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NextGen Hydro</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="nav">
+        <h1>NextGen Hydro</h1>
+        <p class="kicker">Python</p>
+        <nav>
+          <button type="button" data-page="map" class="is-on">Map</button>
+          <button type="button" data-page="watershed">Watershed</button>
+          <button type="button" data-page="logs">Logs</button>
+          <button type="button" data-page="results">Results</button>
+          <button type="button" data-page="live">Live log</button>
+        </nav>
+        <pre id="status" class="status"></pre>
+      </aside>
+      <section class="map-stage">
+        <div id="map"></div>
+        <div class="legend" id="legend" hidden></div>
+      </section>
+      <section class="panel">
+        <h2>Ask for a simulation</h2>
+        <p id="key-line">Checking the OpenAI key.</p>
+        <label>Sentence<textarea id="sentence" rows="4" placeholder="Describe the watershed, the dates, and the forcing."></textarea></label>
+        <button type="button" id="ask">Ask</button>
+        <p id="note"></p>
+        <h3>JSON plan</h3>
+        <pre id="plan">{}</pre>
+        <div id="gages"></div>
+        <h3>Run request</h3>
+        <label>USGS gage<input id="gage" /></label>
+        <div class="pair">
+          <label>Latitude<input id="lat" /></label>
+          <label>Longitude<input id="lng" /></label>
+        </div>
+        <label>Start<input id="start" type="datetime-local" /></label>
+        <label>End<input id="end" type="datetime-local" /></label>
+        <label>Forcing<select id="forcing"></select></label>
+        <label>Realization<select id="realization"></select></label>
+        <label>Output folder<input id="output" placeholder="./data/my-run" /></label>
+        <p id="command"></p>
+        <div class="actions">
+          <button type="button" id="run">Run</button>
+          <button type="button" id="stop">Stop</button>
+        </div>
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

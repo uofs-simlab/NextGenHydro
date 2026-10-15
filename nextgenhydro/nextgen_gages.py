@@ -1,0 +1,38 @@
+import os
+import sqlite3
+
+from .agent import is_gage_id
+
+HYDROFABRIC = os.path.expanduser("~/.ngiab/hydrofabric/v2.2/conus_nextgen.gpkg")
+_DATABASE: sqlite3.Connection | None | bool = False
+
+
+def _open() -> sqlite3.Connection | None:
+    global _DATABASE
+    if _DATABASE is not False:
+        return _DATABASE if isinstance(_DATABASE, sqlite3.Connection) else None
+    if not os.path.exists(HYDROFABRIC):
+        _DATABASE = None
+        return None
+    try:
+        _DATABASE = sqlite3.connect(f"file:{HYDROFABRIC}?mode=ro", uri=True)
+    except sqlite3.Error:
+        _DATABASE = None
+    return _DATABASE if isinstance(_DATABASE, sqlite3.Connection) else None
+
+
+def nextgen_gage_ids(ids: list[str]) -> list[str]:
+    database = _open()
+    unique: list[str] = []
+    seen: set[str] = set()
+    for gage in ids:
+        text = str(gage).strip()
+        if text in seen or not is_gage_id(text):
+            continue
+        seen.add(text)
+        unique.append(text)
+    if database is None or not unique:
+        return []
+    marks = ",".join("?" for _ in unique)
+    found = {str(row[0]) for row in database.execute(f'SELECT gage FROM "flowpath-attributes" WHERE gage IN ({marks})', unique) if row[0]}
+    return [gage for gage in unique if gage in found]
