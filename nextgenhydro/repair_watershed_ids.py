@@ -56,10 +56,12 @@ def repair_watershed_ids(gpkg: str) -> list[dict]:
                     repairs.append({"from": value, "to": nxt, "count": cursor.rowcount})
         for _name, sql in triggers:
             connection.executescript(sql)
-        connection.execute("COMMIT")
+        if connection.in_transaction:
+            connection.execute("COMMIT")
     except Exception:
         try:
-            connection.execute("ROLLBACK")
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
         except sqlite3.Error:
             pass
         raise

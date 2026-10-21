@@ -4,9 +4,16 @@
   --paper: #f6f3ec;
   --water: #1a6b84;
   --deep: #0d3342;
-  font-family: "Avenir Next", sans-serif;
+  font-family: Outfit, "Avenir Next", sans-serif;
 }
 * { box-sizing: border-box; }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3, .workspace-head h2 {
+  font-family: Fraunces, Georgia, serif;
+  font-weight: 560;
+}
+#plan { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dock-log, .result-files { font-family: Outfit, "Avenir Next", sans-serif; font-size: 16px; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--paper); color: var(--ink); }
 .shell { display: grid; grid-template-columns: 220px 1fr 420px; height: 100%; }
@@ -15,12 +22,35 @@ body { background: var(--paper); color: var(--ink); }
 .nav button, .panel button, .gage {
   border: 0; border-radius: 999px; padding: 8px 12px; margin: 4px 4px 4px 0; cursor: pointer;
 }
-.nav button { background: transparent; color: white; display: block; width: 100%; text-align: left; }
+.nav button { background: transparent; color: white; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; }
 .nav button.is-on { background: white; color: var(--deep); }
+.nav-live { margin-left: auto; color: #ff4b4b; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.nav button.is-on .nav-live { color: #ff4b4b; }
 .panel button, .gage { background: var(--water); color: white; }
+#run:disabled { opacity: 0.4; cursor: not-allowed; }
 .map-stage { position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; }
-.legend, .status, #plan, #log, #command, #note {
+.workspace {
+  display: none;
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  padding: 28px;
+  background: #0e1117;
+  color: #fafafa;
+  overflow: auto;
+}
+.map-stage.show-page #map,
+.map-stage.show-page .legend { visibility: hidden; }
+.map-stage.show-page .workspace { display: flex; }
+.workspace-head { display: flex; align-items: center; gap: 12px; }
+.workspace-head h2 { margin: 0; font-size: 28px; }
+.dock-path, .dock-note, .dock-empty { color: #b8bcc8; }
+.dock-log { flex: 1; min-height: 240px; background: transparent; color: #fafafa; white-space: pre-wrap; }
+.result-files { list-style: none; padding: 0; margin: 16px 0; }
+.result-files li { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.12); }
+.dock-state { border-radius: 999px; padding: 4px 10px; background: #1a6b84; }
+.legend, #plan, #command, .dock-path, .dock-note, .dock-log {
   white-space: pre-wrap;
 }
 .legend {
@@ -30,9 +60,61 @@ body { background: var(--paper); color: var(--ink); }
 label { display: block; margin: 10px 0; font-size: 14px; }
 input, textarea, select { width: 100%; margin-top: 4px; padding: 8px; border-radius: 10px; border: 1px solid rgba(13,51,66,.2); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-#plan, #log, .status { background: #111; color: #f4f1ea; padding: 12px; border-radius: 12px; overflow: auto; }
-#log { max-height: 240px; }
+.plan-kicker {
+  margin: 16px 0 8px;
+  font-family: Outfit, "Avenir Next", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--water);
+}
+#plan {
+  margin: 0;
+  max-height: 240px;
+  background: #0e1117;
+  color: #fafafa;
+  padding: 10px 12px;
+  border-radius: 12px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+#plan .gage-fold {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+  cursor: pointer;
+  text-align: left;
+}
+#plan .gage-fold:hover { color: #9fd4e4; }
+#copy-plan { margin-top: 8px; }
 .kicker { letter-spacing: .12em; text-transform: uppercase; font-size: 12px; opacity: .7; }
-.outlet-dot { width: 14px; height: 14px; border-radius: 50%; background: #c45c26; border: 2px solid white; }
+.outlet-dot { width: 14px; height: 14px; border-radius: 50%; background: #c45c26; border: 2px solid white; cursor: pointer; }
+.point-tip .maplibregl-popup-content {
+  background: var(--deep);
+  color: white;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-family: Outfit, "Avenir Next", sans-serif;
+}
+.point-tip .maplibregl-popup-content strong {
+  display: block;
+  margin-bottom: 4px;
+  font-family: Fraunces, Georgia, serif;
+  font-weight: 560;
+}
+.point-tip .maplibregl-popup-content p { margin: 2px 0; font-size: 13px; line-height: 1.35; }
+.point-tip.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--deep); }
+.point-tip.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--deep); }
+.point-tip.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--deep); }
+.point-tip.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--deep); }
 .gage-pin { width: 28px; height: 28px; border-radius: 50%; border: 0; background: white; color: var(--deep); font-weight: 700; }
 .gage-pin.is-selected { background: #c45c26; color: white; }

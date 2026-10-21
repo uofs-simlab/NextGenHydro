@@ -19,9 +19,9 @@ The app starts `your-path/datastreamcli/scripts/datastream` and writes output fo
 | curl | DataStreamCLI downloads the hydrofabric and other files with `curl`. macOS already includes it. |
 | tar | Unpacks downloaded archives. macOS already includes it. |
 | pigz | DataStreamCLI compresses the generated ngen configs with `pigz`. Install it if `pigz` is not on `PATH`. |
-| uv | Provides `uvx`. On **Run**, a gage other than Palisade builds its watershed with `uvx ngiab-prep -i gage-<id> -s` before DataStreamCLI starts. Install uv from [astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/). Confirm with `uvx --version`. |
+| uv | Provides `uvx`. On **Run**, every USGS gage, including Palisade `09106150`, builds its watershed with `uvx ngiab-prep -i gage-<id> -s` before DataStreamCLI starts. Install uv from [astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/). Confirm with `uvx --version`. |
 
-Palisade (`09106150`) uses a published geopackage. Every other USGS gage uses the watershed file from [NGIAB Data Preprocess](https://github.com/CIROH-UA/NGIAB_data_preprocess), already cloned at `NexGen/NGIAB_data_preprocess`. The app runs only the subset step. Forcing stays with DataStreamCLI.
+Every USGS gage uses the watershed file from [NGIAB Data Preprocess](https://github.com/CIROH-UA/NGIAB_data_preprocess), already cloned at `NexGen/NGIAB_data_preprocess`. The app runs only the subset step. Forcing stays with DataStreamCLI.
 
 The geopackage is written to `~/ngiab_preprocess_output/gage-<id>/config/gage-<id>_subset.gpkg`. A later run for the same gage reuses that file. The first subset downloads hydrofabric 2.2 into `~/.ngiab/hydrofabric`. DataStreamCLI receives the file with `-g` and does not call `hfsubset`.
 

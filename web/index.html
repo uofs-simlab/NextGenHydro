@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>NextGen Hydro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
     <link rel="stylesheet" href="/app.css" />
   </head>
@@ -13,44 +16,55 @@
         <h1>NextGen Hydro</h1>
         <p class="kicker">Python</p>
         <nav>
-          <button type="button" data-page="map" class="is-on">Map</button>
-          <button type="button" data-page="watershed">Watershed</button>
-          <button type="button" data-page="logs">Logs</button>
-          <button type="button" data-page="results">Results</button>
-          <button type="button" data-page="live">Live log</button>
+          <button type="button" data-page="map" class="is-on"><span>Map</span></button>
+          <button type="button" data-page="watershed"><span>Watershed</span><span id="mark-watershed" class="nav-live"></span></button>
+          <button type="button" data-page="logs"><span>Logs</span></button>
+          <button type="button" data-page="results"><span>Results</span></button>
+          <button type="button" data-page="live"><span>Live log</span><span id="mark-live" class="nav-live"></span></button>
         </nav>
-        <pre id="status" class="status"></pre>
       </aside>
-      <section class="map-stage">
+        <section class="map-stage" id="stage">
         <div id="map"></div>
         <div class="legend" id="legend" hidden></div>
+        <section class="workspace" id="workspace" hidden>
+          <header class="workspace-head">
+            <h2 id="page-title">Watershed</h2>
+            <span id="page-state"></span>
+          </header>
+          <p id="page-path" class="dock-path"></p>
+          <p id="page-note" class="dock-note"></p>
+          <pre id="page-body" class="dock-log"></pre>
+          <ul id="page-files" class="result-files"></ul>
+        </section>
       </section>
       <section class="panel">
         <h2>Ask for a simulation</h2>
         <p id="key-line">Checking the OpenAI key.</p>
         <label>Sentence<textarea id="sentence" rows="4" placeholder="Describe the watershed, the dates, and the forcing."></textarea></label>
         <button type="button" id="ask">Ask</button>
-        <p id="note"></p>
-        <h3>JSON plan</h3>
+        <p class="plan-kicker">JSON plan</p>
         <pre id="plan">{}</pre>
+        <button type="button" id="copy-plan">Copy</button>
         <div id="gages"></div>
         <h3>Run request</h3>
-        <label>USGS gage<input id="gage" /></label>
+        <label>USGS gauge<input id="gage" /></label>
+        <!-- Latitude and longitude widgets are hidden for now. The plan still stores gauge and outlet coordinates.
         <div class="pair">
           <label>Latitude<input id="lat" /></label>
           <label>Longitude<input id="lng" /></label>
         </div>
+        -->
         <label>Start<input id="start" type="datetime-local" /></label>
         <label>End<input id="end" type="datetime-local" /></label>
         <label>Forcing<select id="forcing"></select></label>
         <label>Realization<select id="realization"></select></label>
         <label>Output folder<input id="output" placeholder="./data/my-run" /></label>
+        <label>Processes<input id="nprocs" type="number" min="1" max="256" value="4" /></label>
         <p id="command"></p>
         <div class="actions">
           <button type="button" id="run">Run</button>
           <button type="button" id="stop">Stop</button>
         </div>
-        <pre id="log" class="log"></pre>
       </section>
     </main>
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>

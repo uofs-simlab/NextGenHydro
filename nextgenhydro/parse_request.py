@@ -120,6 +120,13 @@ def find_dates(text: str) -> list[dict]:
             len(match.group(0)),
             to_iso(int(match.group(1)), int(match.group(2)), int(match.group(3)), 0, 0),
         )
+    for match in re.finditer(r"\b(20\d{2})[/\\-](\d{2})(\d{2})\b", text):
+        _push_date(
+            found,
+            match.start(),
+            len(match.group(0)),
+            to_iso(int(match.group(1)), int(match.group(2)), int(match.group(3)), 0, 0),
+        )
     for match in re.finditer(rf"\b(\d{{1,2}})\s+({MONTH_PATTERN})\s+(20\d{{2}})\b", text, re.I):
         month = MONTHS[match.group(2).lower()]
         _push_date(found, match.start(), len(match.group(0)), to_iso(int(match.group(3)), month, int(match.group(1)), 0, 0))

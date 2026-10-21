@@ -13,22 +13,22 @@ from .agent import (
     EMPTY_PATCH,
     apply_agent_patch,
     fallback_answer,
-    fill_gaps,
     finish_ask,
     is_gage_id,
     is_safe_output_dir,
     note_for_ask,
+    read_named_coordinates,
     sanitize_agent_patch,
     with_hourly_clocks,
 )
 from .datastream_command import datastream_command
 from .forcings import FORCINGS, is_forcing_id
-from .gage_id import PALISADE_GAGE
 from .nearest_gages import lookup_nearest_gages
 from .nextgen_gages import nextgen_gage_ids
 from .nlp import agent_system_prompt
+from .review import review_plan
 from .place_query import place_query_from_sentence
-from .plan import build_plan
+from .plan import build_plan, plan_coordinates
 from .realizations import (
     DEFAULT_REALIZATION,
     REALIZATIONS,
@@ -39,7 +39,7 @@ from .realizations import (
     result_path_for,
 )
 from .repair_watershed_ids import repair_watershed_ids
-from .site_name import lookup_station_point, search_places
+from .site_name import lookup_station_name, lookup_station_point, search_places
 from .watershed import resolve_watershed_geopackage, watershed_geopackage
 from .watershed_geojson import watershed_geojson
 
@@ -50,7 +50,6 @@ SCRIPT = DATASTREAM_ROOT / "scripts" / "datastream"
 KEY_FILES = [ROOT / ".openai-key.local", ROOT.parent / "NextGenHydro" / ".openai-key.local"]
 OPENAI_MODEL = "gpt-5-mini"
 WATERSHED_ROOT = Path.home() / "ngiab_preprocess_output"
-PALISADE_URL = "https://ciroh-community-ngen-datastream.s3.amazonaws.com/resources/v2.1_hydrofabric/geopackages/test_data/palisade.gpkg"
 LOG_TAIL = 80_000
 
 RUNNING: subprocess.Popen | None = None
@@ -116,6 +115,193 @@ def _extract_json(payload: dict):
     return None
 
 
+CHECK_TOOLS = [
+    {
+        "type": "function",
+        "name": "check_gauge",
+        "description": "Ask whether the USGS gauge digits from the sentence are in the NextGen hydrofabric.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"gage": {"type": "string", "description": "Gauge digits from the sentence, or an empty string."}},
+            "required": ["gage"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "check_coordinates",
+        "description": "Ask whether the sentence latitude and longitude are inside the valid ranges.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "lat": {"type": ["number", "null"]},
+                "lng": {"type": ["number", "null"]},
+            },
+            "required": ["lat", "lng"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "check_dates",
+        "description": "Ask whether the start is before the end.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+            },
+            "required": ["start", "end"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "check_models",
+        "description": "Pass the catalog model the sentence means after you have read it. Noah means Noah-OWP-Modular. Rust and LSTM together mean the one model LSTM Rust. Do not pass a fragment such as rust as its own model. without, not using, and do not use exclude that model, so do not pass an excluded model. This function searches the DataStreamCLI list and says which resolved names are not supported. Pass an empty list when the sentence names no model.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "models": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Hydrologic model names read from the sentence.",
+                }
+            },
+            "required": ["models"],
+        },
+    },
+]
+
+
+def _post_openai(key: str, payload: dict) -> dict | None:
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"authorization": f"Bearer {key}", "content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")[:400]
+        print(f"OpenAI request failed ({error.code}): {detail}")
+        return None
+    except Exception as error:
+        print(f"OpenAI request failed: {error}")
+        return None
+
+
+def _function_calls(payload: dict) -> list[dict]:
+    calls = []
+    for item in payload.get("output") or []:
+        if item.get("type") == "function_call" and item.get("name") in {"check_gauge", "check_coordinates", "check_dates", "check_models"}:
+            calls.append(item)
+    return calls
+
+
+def _tool_arguments(call: dict) -> dict:
+    raw = call.get("arguments") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _plan_schema() -> dict:
+    return {
+        "type": "json_schema",
+        "name": "nextgen_form",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "gage": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+                "forcing": {"type": "string", "enum": ["", *[item["id"] for item in FORCINGS]]},
+                "realization": {"type": "string", "enum": ["", *[item["id"] for item in REALIZATIONS]]},
+                "lat": {"type": ["number", "null"]},
+                "lng": {"type": ["number", "null"]},
+                "outputDir": {"type": "string"},
+                "location": {"type": "string"},
+                "action": {"type": "string", "enum": ["", "run", "dry run", "do not run"]},
+                "logging": {"type": "string", "enum": ["", "verbose"]},
+                "nprocs": {"type": "integer", "minimum": 1, "maximum": 256},
+                "note": {"type": "string"},
+                "models": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["gage", "start", "end", "forcing", "realization", "lat", "lng", "outputDir", "location", "action", "logging", "nprocs", "note", "models"],
+        },
+    }
+
+
+def _reviewed_from_calls(sentence: str, calls: list[dict]) -> dict:
+    draft: dict = {}
+    for call in calls:
+        for key, value in _tool_arguments(call).items():
+            if value not in ("", None):
+                draft[key] = value
+    return review_plan(sentence, draft)
+
+
+def _ask_with_checks(key: str, sentence: str) -> dict | None:
+    opened = _post_openai(
+        key,
+        {
+            "model": OPENAI_MODEL,
+            "input": [
+                {
+                    "role": "system",
+                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. Do not choose the realization file in this step. Do not write the plan yet.",
+                },
+                {"role": "user", "content": sentence},
+            ],
+            "tools": CHECK_TOOLS,
+            "tool_choice": "required",
+            "max_output_tokens": 2000,
+            "reasoning": {"effort": "low"},
+        },
+    )
+    if not opened:
+        return None
+    calls = _function_calls(opened)
+    reviewed = _reviewed_from_calls(sentence, calls)
+    if not calls:
+        return {"reviewed": reviewed, "json": None}
+    follow = _post_openai(
+        key,
+        {
+            "model": OPENAI_MODEL,
+            "previous_response_id": opened.get("id"),
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": call.get("call_id"),
+                    "output": json.dumps(reviewed["checks"].get(call.get("name"), {})),
+                }
+                for call in calls
+                if call.get("call_id")
+            ]
+            + [
+                {
+                    "role": "system",
+                    "content": agent_system_prompt(),
+                }
+            ],
+            "text": {"format": _plan_schema()},
+            "max_output_tokens": 2000,
+            "reasoning": {"effort": "low"},
+        },
+    )
+    return {"reviewed": reviewed, "json": _extract_json(follow) if follow else None}
+
+
 def call_openai(key: str, sentence: str, form: dict, schema_mode: bool) -> dict:
     prompt = agent_system_prompt()
     payload = {
@@ -128,29 +314,7 @@ def call_openai(key: str, sentence: str, form: dict, schema_mode: bool) -> dict:
         "reasoning": {"effort": "low"},
     }
     if schema_mode:
-        payload["text"] = {
-            "format": {
-                "type": "json_schema",
-                "name": "nextgen_form",
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "gage": {"type": "string"},
-                        "start": {"type": "string"},
-                        "end": {"type": "string"},
-                        "forcing": {"type": "string", "enum": ["", *[item["id"] for item in FORCINGS]]},
-                        "realization": {"type": "string", "enum": ["", *[item["id"] for item in REALIZATIONS]]},
-                        "lat": {"type": ["number", "null"]},
-                        "lng": {"type": ["number", "null"]},
-                        "outputDir": {"type": "string"},
-                        "location": {"type": "string"},
-                        "note": {"type": "string"},
-                    },
-                    "required": ["gage", "start", "end", "forcing", "realization", "lat", "lng", "outputDir", "location", "note"],
-                },
-            }
-        }
+        payload["text"] = {"format": _plan_schema()}
     request = urllib.request.Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(payload).encode("utf-8"),
@@ -179,46 +343,88 @@ def ask_sentence(sentence: str, _form: dict | None = None) -> dict:
             "lng": None,
             "outputDir": "",
         }
-        first = call_openai(key, sentence, current, True)
-        raw = first["json"]
-        if first["reached"] and raw is None:
-            raw = call_openai(key, sentence, current, False)["json"]
+        checked = _ask_with_checks(key, sentence)
+        raw = checked["json"] if checked else None
+        if raw is None:
+            first = call_openai(key, sentence, current, True)
+            raw = first["json"]
+            if first["reached"] and raw is None:
+                raw = call_openai(key, sentence, current, False)["json"]
         if raw is not None:
-            patch = with_hourly_clocks(fill_gaps(sanitize_agent_patch(raw), sentence))
-            note = patch.get("note") or "Filled the form from that sentence."
-            if patch.get("location") and patch["location"] not in note:
-                note = f"{note} Location is {patch['location']}.".strip()
-            answer = finish_ask({"patch": {**patch, "note": note}, "note": note, "usedModel": True})
+            patch = with_hourly_clocks(sanitize_agent_patch(raw))
+            named_models = raw.get("models") if isinstance(raw.get("models"), list) else []
+            if not named_models and checked and checked.get("reviewed"):
+                named_models = checked["reviewed"].get("askedModels") or []
+            patch["models"] = named_models
+            note = patch.get("note") or ""
+            answer = finish_ask({"patch": {**patch, "note": note}, "note": note, "usedModel": True}, sentence)
+        elif checked and checked.get("reviewed"):
+            patch = checked["reviewed"]["patch"]
+            note = " ".join(checked["reviewed"]["messages"])
+            answer = finish_ask({"patch": {**patch, "note": note}, "note": note, "usedModel": True}, sentence)
     if answer is None:
-        answer = finish_ask(fallback_answer(sentence))
+        answer = finish_ask(fallback_answer(sentence), sentence)
     current_form = {
         "request": {"gage": "", "start": "", "end": "", "forcing": ""},
         "runOptions": {"outputDir": "", "realization": DEFAULT_REALIZATION},
         "outlet": None,
     }
     merged = apply_agent_patch(current_form, answer["patch"])
+    named = read_named_coordinates(sentence)
+    gage_named = re.search(r"\b\d{7,15}\b", sentence) is not None
     place = answer["patch"].get("location", "").strip()
-    point_named = answer["patch"].get("lat") is not None and answer["patch"].get("lng") is not None
-    hunt = re.search(r"\b\d{7,15}\b", sentence) is None and (place != "" or point_named)
-    if hunt:
-        merged["request"]["gage"] = ""
-    focus = _focus(sentence, "" if hunt else merged["request"]["gage"], answer["patch"], place)
     gages = []
-    message = note_for_ask(answer, merged["request"])
-    if hunt and focus:
-        gages = lookup_nearest_gages(focus, nextgen_gage_ids)
-        if gages:
-            message = f"{message} The nearest NextGen stations are on the map. Pick one to fill the gage in the plan."
-        else:
-            message = f"{message} No NextGen station was found near that place. The gage stays empty."
-    elif hunt and not focus:
-        message = f"{message} That place was not found, so no gages were marked. The gage stays empty."
+    if named and not named["valid"]:
+        hunt = False
+        focus = None
+        message = answer.get("note", "")
+    elif named and named["valid"] and not gage_named:
+        hunt = False
+        focus = {"lng": named["lng"], "lat": named["lat"], "zoom": 12}
+        gages = answer.get("gages") or lookup_nearest_gages(focus, nextgen_gage_ids)
+        message = note_for_ask(answer, merged["request"])
+        if gages and not answer["patch"].get("gage"):
+            nearest = gages[0]
+            answer["patch"]["gage"] = nearest["id"]
+            answer["patch"]["location"] = nearest.get("name") or ""
+            merged["request"]["gage"] = nearest["id"]
+            merged["outlet"] = {"lat": named["lat"], "lng": named["lng"]}
+        if gages and "nearest NextGen gauge" not in message:
+            message = f"{message} The nearest NextGen gauge is USGS {gages[0]['id']}."
+        elif not gages:
+            answer["patch"]["action"] = "do not run"
+            if "No NextGen gauge was found" not in message:
+                message = f"{message} No NextGen gauge was found at that point, so the gauge number stays empty and this run is not ready."
+    else:
+        point_named = answer["patch"].get("lat") is not None and answer["patch"].get("lng") is not None
+        hunt = not gage_named and (place != "" or point_named)
+        if hunt:
+            merged["request"]["gage"] = ""
+        focus = _focus(sentence, "" if hunt else merged["request"]["gage"], answer["patch"], place)
+        message = note_for_ask(answer, merged["request"])
+        if hunt and focus:
+            gages = lookup_nearest_gages(focus, nextgen_gage_ids)
+            if gages:
+                message = f"{message} The nearest NextGen stations are on the map. Pick one to fill the gauge in the plan."
+            else:
+                message = f"{message} No NextGen station was found near that place. The gauge stays empty."
+        elif hunt and not focus:
+            message = f"{message} That place was not found, so no gauges were marked. The gauge stays empty."
+    points = plan_coordinates(sentence, merged["request"].get("gage") or "")
     plan = build_plan(
         answer["patch"].get("location", ""),
         merged["request"],
         merged["runOptions"]["realization"],
         merged["runOptions"]["outputDir"],
         bool(answer["patch"].get("realization")),
+        answer["patch"].get("action", ""),
+        answer["patch"].get("logging", ""),
+        answer["patch"].get("nprocs", 4),
+        message,
+        points["gauge_latitude"],
+        points["gauge_longitude"],
+        points["outlet_latitude"],
+        points["outlet_longitude"],
     )
     return {
         "usedModel": answer["usedModel"],
@@ -240,8 +446,6 @@ def _focus(sentence: str, gage: str, patch: dict, place_name: str) -> dict | Non
     if patch.get("lat") is not None and patch.get("lng") is not None:
         return {"lng": patch["lng"], "lat": patch["lat"], "zoom": 12}
     if is_gage_id(gage):
-        if gage == PALISADE_GAGE:
-            return {"lng": -107.15, "lat": 39.73, "zoom": 8, "bounds": [[-108.68, 38.97], [-105.62, 40.49]]}
         site = lookup_station_point(gage)
         if site:
             return {"lng": site["lng"], "lat": site["lat"], "zoom": 11}
@@ -308,8 +512,6 @@ def _write_both(chunks: list[str], handler, text: str) -> None:
 
 def ensure_watershed(gage: str, write) -> bool:
     global RUNNING, WATERSHED_BUSY
-    if gage == PALISADE_GAGE:
-        return True
     gpkg = Path(resolve_watershed_geopackage(gage, str(Path.home())))
     if not gpkg.exists():
         write(f"Building the watershed for USGS {gage} with NGIAB Data Preprocess.\n")
@@ -440,10 +642,7 @@ class AppHandler(BaseHTTPRequestHandler):
     def _watershed_status(self, gage: str) -> None:
         global WATERSHED_BUILD
         if not is_gage_id(gage):
-            self._json(400, {"phase": "missing", "message": "Set a USGS gage.", "log": "", "path": ""})
-            return
-        if gage == PALISADE_GAGE:
-            self._json(200, {"phase": "ready", "message": "Palisade uses the published geopackage.", "log": "", "path": PALISADE_URL})
+            self._json(400, {"phase": "missing", "message": "Set a USGS gauge.", "log": "", "path": ""})
             return
         path = watershed_geopackage(gage)
         gpkg = Path(resolve_watershed_geopackage(gage, str(Path.home())))
@@ -461,8 +660,8 @@ class AppHandler(BaseHTTPRequestHandler):
         self._json(200, {"phase": "missing", "message": f"The watershed file for USGS {gage} is not on this computer yet.", "log": "", "path": path})
 
     def _watershed_geojson(self, gage: str) -> None:
-        if not is_gage_id(gage) or gage == PALISADE_GAGE:
-            self._json(400, {"ready": False, "status": "That gage has no local watershed file."})
+        if not is_gage_id(gage):
+            self._json(400, {"ready": False, "status": "Set a USGS gauge."})
             return
         gpkg = Path(resolve_watershed_geopackage(gage, str(Path.home())))
         if not gpkg.exists():
@@ -475,7 +674,9 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(202, {"ready": False, "status": status})
             return
         try:
-            self._json(200, watershed_geojson(str(gpkg)))
+            body = dict(watershed_geojson(str(gpkg)))
+            body["name"] = lookup_station_name(gage) or ""
+            self._json(200, body)
         except RuntimeError as error:
             if str(error) == "WATERSHED_WRITING":
                 self._json(202, {"ready": False, "status": "The watershed file is still being written."})
@@ -484,7 +685,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _begin_watershed(self, gage: str) -> None:
         global WATERSHED_BUSY, WATERSHED_BUILD
-        if WATERSHED_BUSY or gage == PALISADE_GAGE:
+        if WATERSHED_BUSY:
             return
         gpkg = Path(resolve_watershed_geopackage(gage, str(Path.home())))
         if gpkg.exists():
@@ -596,7 +797,7 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         preview = datastream_command(
             {"gage": gage, "start": body["start"], "end": body["end"], "forcing": forcing},
-            {"outputDir": output_dir, "realization": realization},
+            {"outputDir": output_dir, "realization": realization, "action": body.get("action") or "", "logging": body.get("logging") or "", "nprocs": body.get("nprocs", 4)},
         )
         if not preview or not preview["ready"]:
             self._text(400, "The run request is incomplete.\n")
@@ -651,10 +852,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 log_path.close()
             return
         argv = preview["argv"]
-        if gage != PALISADE_GAGE:
-            shown = watershed_geopackage(gage)
-            absolute = resolve_watershed_geopackage(gage, str(Path.home()))
-            argv = [absolute if item == shown else item for item in argv]
+        shown = watershed_geopackage(gage)
+        absolute = resolve_watershed_geopackage(gage, str(Path.home()))
+        argv = [absolute if item == shown else item for item in argv]
         child = subprocess.Popen(
             ["bash", str(SCRIPT), *argv],
             cwd=DATASTREAM_ROOT,

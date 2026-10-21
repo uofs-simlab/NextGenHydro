@@ -1,7 +1,7 @@
 import re
 
 from .forcings import is_forcing_id
-from .nlp import interpret_forcing, interpret_realization
+from .nlp import interpret_action, interpret_forcing, interpret_logging, interpret_nprocs, interpret_realization
 from .parse_request import align_hourly_time, hourly_clock_note, merge_request, parse_request
 from .place_query import place_query_from_sentence
 from .realizations import is_realization_id
@@ -39,6 +39,16 @@ def is_iso_date_time(value: str) -> bool:
     from .parse_request import to_iso
 
     return to_iso(year, month, day, hour, minute) == value
+
+
+def _clean_nprocs(value) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 4
+    if number < 1:
+        return 4
+    return min(number, 256)
 
 
 def _clean_date(value) -> str:
@@ -113,6 +123,9 @@ def sanitize_agent_patch(value) -> dict:
         "outputDir": output_dir.strip() if isinstance(output_dir, str) and is_safe_output_dir(output_dir) else "",
         "location": _clean_location(raw.get("location")),
         "note": _clean_note(raw.get("note")),
+        "action": raw.get("action") if raw.get("action") in {"", "run", "dry run", "do not run"} else "",
+        "logging": "verbose" if raw.get("logging") == "verbose" else "",
+        "nprocs": _clean_nprocs(raw.get("nprocs")),
     }
 
 
@@ -151,6 +164,9 @@ def _read_sentence(sentence: str) -> dict:
         "realization": model["realization"],
         "realizationNote": model["note"],
         "realizationSource": model["source"],
+        "action": interpret_action(sentence),
+        "logging": interpret_logging(sentence),
+        "nprocs": interpret_nprocs(sentence),
     }
 
 
@@ -166,21 +182,6 @@ def with_hourly_clocks(patch: dict) -> dict:
     if not clock_note:
         return patch
     return {**patch, "start": start, "end": end, "note": " ".join(part for part in [patch.get("note", ""), clock_note] if part)}
-
-
-def fill_gaps(patch: dict, sentence: str) -> dict:
-    local = _read_sentence(sentence)
-    forcing = patch.get("forcing") or local["forcing"] if local["forcingSource"] == "none" else local["forcing"]
-    return {
-        **patch,
-        "gage": local["gage"],
-        "start": local["start"],
-        "end": local["end"],
-        "forcing": forcing,
-        "realization": local["realization"],
-        "location": named_location(sentence, patch.get("location", "")),
-        "note": _choice_note(patch.get("note", ""), [local["realizationNote"], local["forcingNote"]]),
-    }
 
 
 def fallback_answer(sentence: str) -> dict:
@@ -204,6 +205,169 @@ def fallback_answer(sentence: str) -> dict:
     note = _mention_location(_choice_note(base, [parsed["realizationNote"], parsed["forcingNote"]]), location)
     patch = with_hourly_clocks({**EMPTY_PATCH, **parsed, "location": location, "note": note})
     return {"patch": patch, "note": patch["note"], "usedModel": False}
+
+
+def flag_inverted_dates(patch: dict) -> dict:
+    start = patch.get("start") or ""
+    end = patch.get("end") or ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", start) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", end):
+        return patch
+    if end > start:
+        return patch
+    note = f"Start {start.replace('T', ' ')} is not before end {end.replace('T', ' ')}, so this run is not ready."
+    existing = patch.get("note", "")
+    return {
+        **patch,
+        "action": "do not run",
+        "note": existing if note in existing else " ".join(part for part in [existing, note] if part),
+    }
+
+
+_FALSE_GAGE_CLAIM = re.compile(r"not a NextGen (?:station|gage|gauge)|left blank", re.I)
+
+
+def _without_false_blank_claim(note: str) -> str:
+    kept = []
+    for sentence in re.split(r"(?<=[.])\s+", note.strip()):
+        if not sentence:
+            continue
+        if not _FALSE_GAGE_CLAIM.search(sentence):
+            kept.append(sentence)
+            continue
+        extras = [
+            piece.strip(" ,;")
+            for piece in re.split(r"\s+and\s+", sentence, flags=re.I)
+            if piece.strip(" ,;") and not _FALSE_GAGE_CLAIM.search(piece)
+        ]
+        if extras:
+            kept.append(" ".join(extras))
+    cleaned = re.sub(r"\s{2,}", " ", " ".join(kept))
+    cleaned = re.sub(r"\s+([,.;])", r"\1", cleaned)
+    return cleaned.strip(" ,;")
+
+
+def _dates_block_run(patch: dict) -> bool:
+    start = patch.get("start") or ""
+    end = patch.get("end") or ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", start) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", end):
+        return False
+    return end <= start
+
+
+def _note_blocks_run(note: str) -> bool:
+    return re.search(r"not before|start is after end|not ready|outside -?\d", note, re.I) is not None
+
+
+def _clear_false_gage_rejection(patch: dict, sentence: str) -> dict:
+    original = patch.get("note", "")
+    note = _without_false_blank_claim(original)
+    if note == original:
+        return patch
+    action = patch.get("action", "")
+    if (
+        action == "do not run"
+        and not _dates_block_run(patch)
+        and not _note_blocks_run(note)
+        and interpret_action(sentence) != "do not run"
+    ):
+        action = interpret_action(sentence)
+    realization = patch.get("realization") or ""
+    if not realization and action in {"run", "dry run"}:
+        chosen = interpret_realization(sentence)
+        if chosen.get("source") == "chosen" and chosen.get("realization"):
+            realization = chosen["realization"]
+            if chosen.get("note"):
+                note = _append_note(note, chosen["note"])
+    return {**patch, "note": note, "action": action, "realization": realization}
+
+
+def restore_known_gage(patch: dict, sentence: str) -> dict:
+    from .nextgen_gages import gage_in_hydrofabric
+
+    if is_gage_id(patch.get("gage") or ""):
+        return patch
+    named = parse_request(sentence).get("gage") or ""
+    if not is_gage_id(named) or gage_in_hydrofabric(named) is not True:
+        return patch
+    return _clear_false_gage_rejection({**patch, "gage": named}, sentence)
+
+
+def drop_unknown_gage(patch: dict, sentence: str) -> dict:
+    from .nextgen_gages import gage_in_hydrofabric
+
+    gage = patch.get("gage") or ""
+    if not is_gage_id(gage):
+        return patch
+    known = gage_in_hydrofabric(gage)
+    if known is None or known:
+        if not known:
+            return patch
+        return _clear_false_gage_rejection(patch, sentence)
+    place = named_location(sentence, "")
+    note = f"USGS {gage} is not a NextGen gauge, so the gauge stays empty and this run is not ready."
+    existing = patch.get("note", "")
+    return {
+        **patch,
+        "gage": "",
+        "location": place,
+        "action": "do not run",
+        "note": existing if note in existing else " ".join(part for part in [existing, note] if part),
+    }
+
+
+def with_valid_gage_point(patch: dict) -> dict:
+    from .nextgen_gages import gage_in_hydrofabric
+    from .site_name import lookup_station_point
+
+    gage = patch.get("gage") or ""
+    if not is_gage_id(gage) or gage_in_hydrofabric(gage) is not True:
+        return {**patch, "lat": None, "lng": None}
+    point = lookup_station_point(gage)
+    if not point:
+        return {**patch, "lat": None, "lng": None}
+    return {**patch, "lat": point["lat"], "lng": point["lng"]}
+
+
+def read_named_coordinates(sentence: str) -> dict | None:
+    lat_match = re.search(r"\b(?:latitude|lat)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)", sentence, re.I)
+    lng_match = re.search(r"\b(?:longitude|long|lng|lon)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)", sentence, re.I)
+    if not lat_match or not lng_match:
+        return None
+    lat = float(lat_match.group(1))
+    lng = float(lng_match.group(1))
+    return {"lat": lat, "lng": lng, "valid": -90 <= lat <= 90 and -180 <= lng <= 180}
+
+
+def _append_note(existing: str, note: str) -> str:
+    return existing if note in existing else " ".join(part for part in [existing, note] if part)
+
+
+def apply_named_coordinates(patch: dict, sentence: str) -> dict:
+    named = read_named_coordinates(sentence)
+    if not named:
+        return patch
+    if named["valid"]:
+        return {**patch, "lat": named["lat"], "lng": named["lng"]}
+    location = patch.get("location", "")
+    note = patch.get("note", "")
+    if location:
+        note = note.replace(f"Location is {location}.", "").strip()
+    problems = []
+    if not -90 <= named["lat"] <= 90:
+        problems.append(f"latitude {named['lat']:g} is outside -90 to 90")
+    if not -180 <= named["lng"] <= 180:
+        problems.append(f"longitude {named['lng']:g} is outside -180 to 180")
+    reason = " and ".join(problems)
+    added = f"{reason[:1].upper()}{reason[1:]}, so this run is not ready."
+    return {
+        **patch,
+        "lat": None,
+        "lng": None,
+        "location": "",
+        "gage": "",
+        "action": "do not run",
+        "note": _append_note(note, added),
+    }
 
 
 def with_station_location(patch: dict) -> dict:
@@ -238,6 +402,10 @@ def note_for_ask(answer: dict, merged: dict) -> str:
     return f"{answer.get('note', '')} The request is complete."
 
 
-def finish_ask(answer: dict) -> dict:
-    patch = with_station_location(answer["patch"])
-    return {**answer, "patch": patch, "note": patch.get("note", "")}
+def finish_ask(answer: dict, sentence: str) -> dict:
+    from .review import note_from_feedback, review_plan
+
+    reviewed = review_plan(sentence, answer["patch"])
+    note = note_from_feedback(answer["patch"].get("note", ""), reviewed["messages"])
+    patch = {**reviewed["patch"], "note": note}
+    return {**answer, "patch": patch, "note": note, "gages": reviewed.get("gages") or []}

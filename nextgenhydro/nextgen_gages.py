@@ -21,6 +21,16 @@ def _open() -> sqlite3.Connection | None:
     return _DATABASE if isinstance(_DATABASE, sqlite3.Connection) else None
 
 
+def gage_in_hydrofabric(gage: str) -> bool | None:
+    database = _open()
+    if database is None:
+        return None
+    if not is_gage_id(gage):
+        return False
+    row = database.execute('SELECT 1 FROM "flowpath-attributes" WHERE gage = ? LIMIT 1', (gage,)).fetchone()
+    return row is not None
+
+
 def nextgen_gage_ids(ids: list[str]) -> list[str]:
     database = _open()
     unique: list[str] = []

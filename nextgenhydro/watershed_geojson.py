@@ -31,6 +31,26 @@ def _visit(geometry: dict, bounds: list[float]) -> None:
                 walk(ring)
 
 
+def hydrofabric_outlet(gpkg: str, gage_id: str) -> dict | None:
+    if not gage_id or not os.path.isfile(gpkg):
+        return None
+    connection = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
+    try:
+        try:
+            row = connection.execute("SELECT hl_x, hl_y FROM hydrolocations WHERE hl_link = ? LIMIT 1", (gage_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+    finally:
+        connection.close()
+    if not row:
+        return None
+    try:
+        longitude, latitude = __import__("nextgenhydro.albers5070", fromlist=["albers5070_to_lon_lat"]).albers5070_to_lon_lat(float(row[0]), float(row[1]))
+    except (TypeError, ValueError):
+        return None
+    return {"latitude": latitude, "longitude": longitude}
+
+
 def watershed_geojson(gpkg: str) -> dict:
     stamp = os.stat(gpkg).st_mtime
     hit = _CACHE.get(gpkg)

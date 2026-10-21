@@ -1,13 +1,8 @@
 import re
 
-from .gage_id import PALISADE_GAGE
 from .parse_request import align_hourly_time, hourly_clock_note, to_datastream_time
 from .realizations import output_dir_for
 from .watershed import watershed_geopackage
-
-PALISADE_GEOPACKAGE = (
-    "https://ciroh-community-ngen-datastream.s3.amazonaws.com/resources/v2.1_hydrofabric/geopackages/test_data/palisade.gpkg"
-)
 
 
 def _shell_arg(value: str) -> str:
@@ -28,11 +23,19 @@ def datastream_command(request: dict, options: dict) -> dict | None:
     if request.get("forcing"):
         argv.extend(["-C", request["forcing"]])
     argv.extend(["-d", output_dir])
-    if request["gage"] == PALISADE_GAGE:
-        argv.extend(["-g", PALISADE_GEOPACKAGE])
-    else:
-        argv.extend(["-g", watershed_geopackage(request["gage"])])
+    argv.extend(["-g", watershed_geopackage(request["gage"])])
     argv.extend(["-R", f"./configs/ngen/{options.get('realization', '')}"])
+    try:
+        nprocs = int(options.get("nprocs", 4))
+    except (TypeError, ValueError):
+        nprocs = 4
+    nprocs = 4 if nprocs < 1 else min(nprocs, 256)
+    argv.extend(["-n", str(nprocs)])
+    dry_run = options.get("action") == "dry run"
+    if dry_run:
+        argv.extend(["-y", "True"])
+    if options.get("logging") == "verbose":
+        argv.extend(["-V", "True"])
     lines = ["./scripts/datastream \\"]
     for index in range(0, len(argv), 2):
         flag = argv[index]
@@ -47,10 +50,10 @@ def datastream_command(request: dict, options: dict) -> dict | None:
         note = "The end is not after the start, so this command is not ready."
     elif not request.get("forcing"):
         note = "Forcing is still open, so this command is not ready."
-    elif request["gage"] == PALISADE_GAGE:
-        note = "Run starts this command in the datastreamcli folder. The geopackage is the Palisade hydrofabric on the map."
     else:
         note = "Run builds this watershed with NGIAB Data Preprocess when the file is missing, then starts this command in the datastreamcli folder. Forcing stays with DataStreamCLI."
+        if dry_run:
+            note = "This is a dry run. DataStreamCLI starts with -y True, writes the setup, and skips forcing generation, BMI configuration, validation, and the NextGen execution."
     if clock_note:
         note = f"{note} {clock_note}"
     return {"text": "\n".join(lines), "argv": argv, "ready": ready, "note": note}
