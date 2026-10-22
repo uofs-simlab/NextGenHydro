@@ -329,8 +329,8 @@ def with_valid_gage_point(patch: dict) -> dict:
 
 
 def read_named_coordinates(sentence: str) -> dict | None:
-    lat_match = re.search(r"\b(?:latitude|lat)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)", sentence, re.I)
-    lng_match = re.search(r"\b(?:longitude|long|lng|lon)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)", sentence, re.I)
+    lat_match = re.search(r"\b(?:latitude|lat)[\"']?\s*[:=]?\s*[\"']?([+-]?\d+(?:\.\d+)?)", sentence, re.I)
+    lng_match = re.search(r"\b(?:longitude|long|lng|lon)[\"']?\s*[:=]?\s*[\"']?([+-]?\d+(?:\.\d+)?)", sentence, re.I)
     if not lat_match or not lng_match:
         return None
     lat = float(lat_match.group(1))

@@ -113,6 +113,25 @@ def parse_site_rows(text: str) -> list[dict]:
     return sites
 
 
+_GENERIC_PLACE = {
+    "upper", "lower", "river", "basin", "watershed", "creek", "lake", "fork", "north", "south", "east", "west",
+    "little", "big", "detention", "protected", "landscape", "the", "of",
+}
+
+
+def choose_place_hit(query: str, hits: list[dict]) -> dict | None:
+    if not hits:
+        return None
+    specific = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z'-]+", query) if word.lower() not in _GENERIC_PLACE]
+    if not specific:
+        return hits[0]
+    for hit in hits:
+        blob = f"{hit.get('label', '')} {hit.get('detail', '')}".lower()
+        if all(word in blob for word in specific):
+            return hit
+    return None
+
+
 def search_places(query: str) -> list[dict]:
     url = "https://photon.komoot.io/api/?q=" + urllib.request.quote(query) + "&limit=6&lat=39.8&lon=-98.6"
     text = _fetch(url, timeout=12)

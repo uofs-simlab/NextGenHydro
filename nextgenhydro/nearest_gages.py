@@ -47,6 +47,24 @@ def _box(origin: dict, span: float) -> tuple[float, float, float, float]:
     )
 
 
+def bounds_for_gages(gages: list[dict]) -> list[list[float]] | None:
+    points = [gage for gage in gages if gage.get("lng") is not None and gage.get("lat") is not None]
+    if not points:
+        return None
+    west = min(gage["lng"] for gage in points)
+    east = max(gage["lng"] for gage in points)
+    south = min(gage["lat"] for gage in points)
+    north = max(gage["lat"] for gage in points)
+    pad = 0.2
+    if east - west < pad:
+        mid = (east + west) / 2
+        west, east = mid - pad / 2, mid + pad / 2
+    if north - south < pad:
+        mid = (north + south) / 2
+        south, north = mid - pad / 2, mid + pad / 2
+    return [[west, south], [east, north]]
+
+
 def lookup_nearest_gages(origin: dict, allowed) -> list[dict]:
     pooled: list[dict] = []
     seen: set[str] = set()

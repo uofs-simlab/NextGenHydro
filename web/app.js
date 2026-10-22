@@ -35,6 +35,7 @@ const pointPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: fals
 let gageHoverBound = false
 let hydroOutlet = null
 let hydroGageId = ""
+let syncOutletFromFabric = false
 
 function isoToLocal(value) {
   return value ? value.slice(0, 16) : ""
@@ -99,6 +100,20 @@ function planText() {
   }, null, 2)
 }
 
+function appendFold(plan, key, values, open, toggle) {
+  const fold = document.createElement("button")
+  fold.type = "button"
+  fold.className = "gage-fold"
+  fold.setAttribute("aria-expanded", open ? "true" : "false")
+  fold.setAttribute("aria-label", key)
+  fold.textContent = open ? `  "${key}": {` : `  "${key}": { … },`
+  fold.addEventListener("click", toggle)
+  plan.append(fold, "\n")
+  if (!open) return
+  const lines = Object.entries(values).map(([name, value]) => `    "${name}": ${JSON.stringify(value)}`)
+  plan.append(`${lines.join(",\n")}\n  },\n`)
+}
+
 function renderPlan() {
   const fields = [
     ["location", state.planLocation],
@@ -124,33 +139,15 @@ function renderPlan() {
     "outlet longitude": outletPoint ? outletPoint.lng : null,
   }
   const plan = $("plan")
-  plan.replaceChildren("{\n", `  "location": ${JSON.stringify(fields[0][1])},`)
-  const fold = document.createElement("button")
-  fold.type = "button"
-  fold.className = "gage-fold"
-  fold.setAttribute("aria-expanded", state.gageOpen ? "true" : "false")
-  fold.setAttribute("aria-label", "gauge")
-  fold.textContent = state.gageOpen
-    ? `  "gauge": {\n    "gauge number": ${JSON.stringify(gage["gauge number"])},\n    "gauge latitude": ${JSON.stringify(gage["gauge latitude"])},\n    "gauge longitude": ${JSON.stringify(gage["gauge longitude"])}\n  },`
-    : `  "gauge": { … },`
-  fold.addEventListener("click", () => {
+  plan.replaceChildren("{\n", `  "location": ${JSON.stringify(fields[0][1])},\n`)
+  appendFold(plan, "gauge", gage, state.gageOpen, () => {
     state.gageOpen = !state.gageOpen
     renderPlan()
   })
-  plan.append(fold)
-  const outletFold = document.createElement("button")
-  outletFold.type = "button"
-  outletFold.className = "gage-fold"
-  outletFold.setAttribute("aria-expanded", state.outletOpen ? "true" : "false")
-  outletFold.setAttribute("aria-label", "outlet")
-  outletFold.textContent = state.outletOpen
-    ? `  "outlet": {\n    "outlet latitude": ${JSON.stringify(outlet["outlet latitude"])},\n    "outlet longitude": ${JSON.stringify(outlet["outlet longitude"])}\n  },`
-    : `  "outlet": { … },`
-  outletFold.addEventListener("click", () => {
+  appendFold(plan, "outlet", outlet, state.outletOpen, () => {
     state.outletOpen = !state.outletOpen
     renderPlan()
   })
-  plan.append(outletFold)
   fields.slice(1).forEach(([key, value], index, list) => {
     const comma = index < list.length - 1 ? "," : ""
     plan.append(`  "${key}": ${JSON.stringify(value)}${comma}\n`)
@@ -277,6 +274,7 @@ async function drawWatershed(gage) {
   }
   if (!response.ok) {
     legend.textContent = body.status || "The watershed could not be drawn."
+    if (state.request.gage === gage) syncOutletFromFabric = false
     return
   }
   const picked = state.gages.find((item) => item.id === gage)
@@ -321,14 +319,36 @@ async function drawWatershed(gage) {
     })
   }
   if (body.bounds) map.fitBounds(body.bounds, { padding: 48, maxZoom: 12 })
+  useFabricOutlet(gage)
   refreshStatus()
+}
+
+function useFabricOutlet(gage) {
+  if (!syncOutletFromFabric || state.request.gage !== gage) return
+  syncOutletFromFabric = false
+  if (!hydroOutlet) return
+  const [lng, lat] = hydroOutlet
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
+  state.outletPoint = { lat, lng }
+  state.bindsGauge = samePoint(state.gaugePoint, state.outletPoint)
+  renderPlan()
 }
 
 function chooseGage(gage) {
   if (!gage) return
   state.request.gage = gage.id
+  state.gaugePoint = { lat: gage.lat, lng: gage.lng }
+  state.outletPoint = { lat: gage.lat, lng: gage.lng }
+  state.bindsGauge = true
   state.outlet = { lat: gage.lat, lng: gage.lng }
-  if (!state.planLocation) state.planLocation = gage.name
+  state.planLocation = gage.name || `USGS ${gage.id}`
+  state.note = state.note
+    .replace(/The nearest NextGen gauge is USGS \d+(?: \([^)]*\))?\.\s*/g, "")
+    .replace(/The nearest NextGen stations are on the map\. Pick one to fill the gauge in the plan\.\s*/g, "")
+    .replace(/You picked USGS \d+\.\s*/g, "")
+    .trim()
+  state.note = `${state.note} You picked USGS ${gage.id}.`.trim()
+  syncOutletFromFabric = true
   paintForm()
   setGages()
   setOutlet(state.outlet)
@@ -484,7 +504,7 @@ $("ask").addEventListener("click", async () => {
     setOutlet(state.outlet)
     setGages()
     if (body.focus) {
-      if (body.focus.bounds) map.fitBounds(body.focus.bounds, { padding: 48 })
+      if (body.focus.bounds) map.fitBounds(body.focus.bounds, { padding: 64, maxZoom: 11 })
       else map.flyTo({ center: [body.focus.lng, body.focus.lat], zoom: body.focus.zoom })
     }
     if (state.request.gage) drawWatershed(state.request.gage)

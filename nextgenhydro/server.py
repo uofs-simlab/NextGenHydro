@@ -23,7 +23,7 @@ from .agent import (
 )
 from .datastream_command import datastream_command
 from .forcings import FORCINGS, is_forcing_id
-from .nearest_gages import lookup_nearest_gages
+from .nearest_gages import bounds_for_gages, lookup_nearest_gages
 from .nextgen_gages import nextgen_gage_ids
 from .nlp import agent_system_prompt
 from .review import review_plan
@@ -39,7 +39,7 @@ from .realizations import (
     result_path_for,
 )
 from .repair_watershed_ids import repair_watershed_ids
-from .site_name import lookup_station_name, lookup_station_point, search_places
+from .site_name import choose_place_hit, lookup_station_name, lookup_station_point, search_places
 from .watershed import resolve_watershed_geopackage, watershed_geopackage
 from .watershed_geojson import watershed_geojson
 
@@ -158,7 +158,7 @@ CHECK_TOOLS = [
     {
         "type": "function",
         "name": "check_models",
-        "description": "Pass the catalog model the sentence means after you have read it. Noah means Noah-OWP-Modular. Rust and LSTM together mean the one model LSTM Rust. Do not pass a fragment such as rust as its own model. without, not using, and do not use exclude that model, so do not pass an excluded model. This function searches the DataStreamCLI list and says which resolved names are not supported. Pass an empty list when the sentence names no model.",
+        "description": "Pass the catalog model the sentence means after you have read it. Noah means Noah-OWP-Modular. Rust and LSTM together mean the one model LSTM Rust. Do not pass a fragment such as rust as its own model. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET, so pass PET. without, not using, and do not use exclude that model, so do not pass an excluded model. This function searches the DataStreamCLI list and says which resolved names are not supported. Pass an empty list when the sentence names no model.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -258,7 +258,7 @@ def _ask_with_checks(key: str, sentence: str) -> dict | None:
             "input": [
                 {
                     "role": "system",
-                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. Do not choose the realization file in this step. Do not write the plan yet.",
+                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. Do not choose the realization file in this step. Do not write the plan yet.",
                 },
                 {"role": "user", "content": sentence},
             ],
@@ -389,8 +389,10 @@ def ask_sentence(sentence: str, _form: dict | None = None) -> dict:
             answer["patch"]["location"] = nearest.get("name") or ""
             merged["request"]["gage"] = nearest["id"]
             merged["outlet"] = {"lat": named["lat"], "lng": named["lng"]}
-        if gages and "nearest NextGen gauge" not in message:
-            message = f"{message} The nearest NextGen gauge is USGS {gages[0]['id']}."
+        if gages:
+            focus = _focus_on_gages(gages) or focus
+            if "nearest NextGen gauge" not in message:
+                message = f"{message} The nearest NextGen gauge is USGS {gages[0]['id']}."
         elif not gages:
             answer["patch"]["action"] = "do not run"
             if "No NextGen gauge was found" not in message:
@@ -406,6 +408,7 @@ def ask_sentence(sentence: str, _form: dict | None = None) -> dict:
             gages = lookup_nearest_gages(focus, nextgen_gage_ids)
             if gages:
                 message = f"{message} The nearest NextGen stations are on the map. Pick one to fill the gauge in the plan."
+                focus = _focus_on_gages(gages) or focus
             else:
                 message = f"{message} No NextGen station was found near that place. The gauge stays empty."
         elif hunt and not focus:
@@ -442,21 +445,34 @@ def ask_sentence(sentence: str, _form: dict | None = None) -> dict:
     }
 
 
+def _focus_on_gages(gages: list[dict]) -> dict | None:
+    box = bounds_for_gages(gages)
+    if not box:
+        return None
+    return {"bounds": box}
+
+
 def _focus(sentence: str, gage: str, patch: dict, place_name: str) -> dict | None:
+    named = read_named_coordinates(sentence)
+    if named and named.get("valid"):
+        return {"lng": named["lng"], "lat": named["lat"], "zoom": 12}
     if patch.get("lat") is not None and patch.get("lng") is not None:
         return {"lng": patch["lng"], "lat": patch["lat"], "zoom": 12}
     if is_gage_id(gage):
         site = lookup_station_point(gage)
         if site:
             return {"lng": site["lng"], "lat": site["lat"], "zoom": 11}
-    place = place_name.strip() or place_query_from_sentence(sentence) or ""
-    if not place:
-        return None
-    hits = search_places(place)
-    if not hits:
-        return None
-    hit = hits[0]
-    return {"lng": hit["lng"], "lat": hit["lat"], "zoom": hit["zoom"]}
+    names = []
+    if place_name.strip():
+        names.append(place_name.strip())
+    parsed = place_query_from_sentence(sentence) or ""
+    if parsed and parsed not in names:
+        names.append(parsed)
+    for place in names:
+        hit = choose_place_hit(place, search_places(place))
+        if hit:
+            return {"lng": hit["lng"], "lat": hit["lat"], "zoom": hit["zoom"]}
+    return None
 
 
 def output_root(gage: str, output_dir: str) -> Path | None:

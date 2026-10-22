@@ -7,7 +7,8 @@ from nextgenhydro.agent import drop_unknown_gage, fallback_answer, finish_ask, f
 from nextgenhydro.plan import build_plan, plan_coordinates
 from nextgenhydro.nextgen_gages import gage_in_hydrofabric
 from nextgenhydro.datastream_command import datastream_command
-from nextgenhydro.nearest_gages import keep_near_stations
+from nextgenhydro.nearest_gages import bounds_for_gages, keep_near_stations
+from nextgenhydro.site_name import choose_place_hit
 from nextgenhydro.nlp import agent_system_prompt, interpret_action, interpret_forcing, interpret_logging, interpret_nprocs, interpret_realization
 from nextgenhydro.review import note_from_feedback, review_plan
 from nextgenhydro.realizations import DEFAULT_REALIZATION
@@ -137,6 +138,8 @@ assert impossible_patch["lng"] is None
 assert impossible_patch["action"] == "do not run"
 assert "outside -90 to 90" in impossible_patch["note"]
 assert "outside -180 to 180" in impossible_patch["note"]
+quoted = read_named_coordinates('upstream of "outlet latitude": 38, "outlet longitude": -77 from June 1')
+assert quoted == {"lat": 38.0, "lng": -77.0, "valid": True}
 possible = read_named_coordinates("Run a simulation at latitude 39.11 and longitude -108.35.")
 assert possible["valid"] is True
 assert possible["lat"] == 39.11
@@ -245,6 +248,17 @@ near = keep_near_stations(
     ]
 )
 assert [item["id"] for item in near] == ["a", "b", "c"]
+ottawa = {"label": "Upper Carp River Detention Basin", "detail": "Ottawa, Ontario, Canada", "lat": 45.28, "lng": -75.89, "zoom": 11}
+colorado = {"label": "Upper Basin", "detail": "Allenspark, Colorado, United States", "lat": 40.14, "lng": -105.52, "zoom": 11}
+assert choose_place_hit("Upper Colorado River Basin", [ottawa, colorado])["detail"].endswith("United States")
+station_box = bounds_for_gages(
+    [
+        {"lat": 39.1, "lng": -108.3},
+        {"lat": 39.5, "lng": -107.8},
+    ]
+)
+assert station_box[0][0] <= -108.3 and station_box[1][0] >= -107.8
+assert station_box[0][1] <= 39.1 and station_box[1][1] >= 39.5
 no_download = "Run NextGen for USGS gauge 01646500 without downloading forcing data or using existing forcing files."
 restored = restore_known_gage(
     {
