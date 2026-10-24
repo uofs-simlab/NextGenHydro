@@ -2,12 +2,49 @@
 
 Programs you need before NextGenHydro can start a DataStreamCLI run. Docker images are pulled on the first run. They are not separate installs.
 
-The app expects these folders side by side on the Desktop:
+The app expects these folders side by side in the same parent folder, for example the Desktop:
 
 - `NextGenHydro` — this app
-- `your-path/datastreamcli` — DataStreamCLI
+- `NexGen/datastreamcli` — DataStreamCLI
 
-The app starts `your-path/datastreamcli/scripts/datastream` and writes output folders under that repo, for example `your-path/datastreamcli/data/my-run`.
+The app looks for DataStreamCLI at `../NexGen/datastreamcli` next to `NextGenHydro`. It starts `NexGen/datastreamcli/scripts/datastream` and writes output folders under that repo, for example `NexGen/datastreamcli/data/my-run`.
+
+## DataStreamCLI: use the uofs-simlab fork
+
+Clone DataStreamCLI from the uofs-simlab fork and check out the `ngen-app-fixing` branch. Do not use the upstream CIROH-UA repo for this app.
+
+```bash
+mkdir -p NexGen
+cd NexGen
+git clone https://github.com/uofs-simlab/datastreamcli.git
+cd datastreamcli
+git checkout ngen-app-fixing
+```
+
+The branch is DataStreamCLI release `v1.7.2` plus fixes this app needs. Tested commit: `6d0c2cc` (October 1, 2026).
+
+| Commit | What it fixes |
+|---|---|
+| `5f1c90f` | Writes the waterbody column name the geopackage has (`WaterbodyID` or `rl_NHDWaterbodyComID`) into the t-route config. |
+| `6d0c2cc` | Does the same for the length column (`Length_m` or `length_m`) and the gage column (`gage`, `gages`, or `rl_gages`). |
+
+Hydrofabric versions name these fields differently. Upstream DataStreamCLI writes one fixed set of names, so t-route routing can fail to find a column when the geopackage uses the other name.
+
+Pinned images on that branch. The run script reads them from `versions.yml` and `versions_integrations.yml`:
+
+| Image | Version |
+|---|---|
+| `awiciroh/datastream` | `1.7.2` |
+| forcingprocessor | `2.3.0` |
+| `awiciroh/ciroh-ngen-image` (NGIAB) | `v1.9.0` |
+| TEEHR | `latest` |
+
+Two fixes in `scripts/datastream` are not committed on the branch yet. A fresh clone does not have them:
+
+- `-V True` (verbose) is applied after the flags are read, so verbose output works.
+- When the final Merkle hashing step fails, the run prints a message and continues. The simulation outputs are already written at that point.
+
+Commit and push those two fixes to `ngen-app-fixing` before handing the branch to a new user.
 
 ## Required
 

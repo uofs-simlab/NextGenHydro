@@ -1,6 +1,7 @@
 import re
 
 from .agent import EMPTY_PATCH, is_gage_id, named_location, sanitize_agent_patch
+from .forecast import plan_forecast
 from .model_support import check_models
 from .nlp import interpret_action, interpret_logging, interpret_nprocs, interpret_realization
 from .parse_request import align_hourly_time, hourly_clock_note, parse_request
@@ -104,7 +105,7 @@ def _draft_models(draft: dict | None) -> list:
     return raw if isinstance(raw, list) else []
 
 
-def review_plan(sentence: str, draft: dict | None = None) -> dict:
+def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
     asked = _draft_models(draft)
     incoming = sanitize_agent_patch(draft or {})
     parsed = parse_request(sentence)
@@ -143,6 +144,16 @@ def review_plan(sentence: str, draft: dict | None = None) -> dict:
     if skips_forcing_download(sentence):
         patch["forcing"] = ""
         messages.append("Forcing stays empty because the sentence says not to download forcing data and not to use existing forcing files.")
+    elif dates.get("ok", True):
+        forecast = plan_forecast(patch.get("forcing") or "", patch["start"], patch["end"], now)
+        if forecast:
+            patch["forcing"] = forecast["forcing"]
+            patch["start"] = forecast["start"]
+            patch["end"] = forecast["end"]
+            messages.append(forecast["message"])
+            if not forecast["ok"]:
+                action = "do not run"
+                patch["action"] = action
     chosen = interpret_realization(sentence, asked, incoming.get("realization") or "")
     if chosen.get("source") == "unsupported":
         patch["realization"] = ""
@@ -198,6 +209,7 @@ def _follows_feedback(note: str, facts: list[str]) -> bool:
         "Forcing stays empty",
         "No model was named",
         "not supported in this repo",
+        "This is a forecast",
         "nearest NextGen gauge",
         "No NextGen gauge was found",
     )

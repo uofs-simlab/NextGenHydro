@@ -1,5 +1,6 @@
 import re
 
+from .forcings import forecast_kind, has_forecast_cycle
 from .parse_request import align_hourly_time, hourly_clock_note, to_datastream_time
 from .realizations import output_dir_for
 from .watershed import watershed_geopackage
@@ -19,8 +20,14 @@ def datastream_command(request: dict, options: dict) -> dict | None:
     output_dir = output_dir_for(request.get("gage", ""), options.get("outputDir", ""))
     if not request.get("gage") or not start or not end or not output_dir:
         return None
-    argv = ["-s", start, "-e", end]
-    if request.get("forcing"):
+    forcing = request.get("forcing", "")
+    forecast = forecast_kind(forcing)
+    if has_forecast_cycle(forcing):
+        issue_day = start[:8] + "0000"
+        argv = ["-s", issue_day, "-e", issue_day]
+    else:
+        argv = ["-s", start, "-e", end]
+    if forcing:
         argv.extend(["-C", request["forcing"]])
     argv.extend(["-d", output_dir])
     argv.extend(["-g", watershed_geopackage(request["gage"])])
@@ -43,13 +50,20 @@ def datastream_command(request: dict, options: dict) -> dict | None:
         last = index + 2 >= len(argv)
         lines.append(f"  {flag} {_shell_arg(value)}{'' if last else ' \\'}")
     dates_ok = end_iso > start_iso
-    ready = dates_ok and request.get("forcing", "") != ""
+    cycle_missing = bool(forecast) and not has_forecast_cycle(forcing)
+    ready = dates_ok and forcing != "" and not cycle_missing
     clock_note = hourly_clock_note(request.get("start", ""), request.get("end", ""))
     note = "Run starts this command in the datastreamcli folder. The output folder must be a new name."
     if not dates_ok:
         note = "The end is not after the start, so this command is not ready."
-    elif not request.get("forcing"):
+    elif not forcing:
         note = "Forcing is still open, so this command is not ready."
+    elif cycle_missing:
+        note = "A forecast forcing needs its issue cycle. Ask the agent for the forecast so it picks the newest cycle, so this command is not ready."
+    elif forecast:
+        note = "Run builds this watershed with NGIAB Data Preprocess when the file is missing, then starts this command in the datastreamcli folder. -s and -e are the forecast issue day. DataStreamCLI adds the cycle hour and runs the whole forecast."
+        if dry_run:
+            note = "This is a dry run. DataStreamCLI starts with -y True, writes the setup, and skips forcing generation, BMI configuration, validation, and the NextGen execution."
     else:
         note = "Run builds this watershed with NGIAB Data Preprocess when the file is missing, then starts this command in the datastreamcli folder. Forcing stays with DataStreamCLI."
         if dry_run:

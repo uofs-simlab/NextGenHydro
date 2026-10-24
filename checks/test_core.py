@@ -396,4 +396,43 @@ false_rust_note = note_from_feedback(
 )
 assert "not supported" not in false_rust_note
 assert "is a NextGen gauge" in false_rust_note
+from datetime import datetime as _datetime
+from nextgenhydro.forecast import plan_forecast
+
+forecast_now = _datetime(2026, 10, 23, 19, 5)
+day_forecast = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", forecast_now)
+assert day_forecast["ok"] and day_forecast["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1"
+assert day_forecast["start"] == "2026-10-23T12:00" and day_forecast["end"] == "2026-10-25T00:00"
+assert "240 hours" in day_forecast["message"]
+switched = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", forecast_now)
+assert switched["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1" and "in place of short range" in switched["message"]
+short = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-23T18:00", "2026-10-24T06:00", forecast_now)
+assert short["ok"] and short["forcing"] == "NWM_V3_SHORT_RANGE_17" and short["start"] == "2026-10-23T17:00"
+too_long = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-11-10T00:00", forecast_now)
+assert not too_long["ok"] and "ends before the requested end" in too_long["message"]
+too_old = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-08-01T00:00", "2026-08-02T00:00", forecast_now)
+assert not too_old["ok"] and "30 days" in too_old["message"]
+assert plan_forecast("NWM_RETRO_V3", "2020-06-01T00:00", "2020-06-02T00:00", forecast_now) is None
+forecast_sentence = "Run a 24-hour NextGen streamflow forecast for the watershed upstream of USGS gauge 01646500, from October 24 to October 25, 2026."
+forecast_review = review_plan(
+    forecast_sentence,
+    {"gage": "01646500", "start": "2026-10-24T00:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE", "action": "run", "models": []},
+    forecast_now,
+)
+assert forecast_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1"
+assert forecast_review["patch"]["action"] == "run"
+assert any("This is a forecast" in message for message in forecast_review["messages"])
+forecast_command = datastream_command(
+    {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE_12_1"},
+    {"outputDir": "./data/forecast", "realization": DEFAULT_REALIZATION, "nprocs": 4},
+)
+assert forecast_command["argv"][:4] == ["-s", "202610230000", "-e", "202610230000"]
+assert forecast_command["ready"]
+bare_command = datastream_command(
+    {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE"},
+    {"outputDir": "./data/forecast", "realization": DEFAULT_REALIZATION, "nprocs": 4},
+)
+assert not bare_command["ready"]
+assert "NWM_V3_MEDIUM_RANGE when it is longer" in agent_system_prompt()
+
 print("python checks ok")

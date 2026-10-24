@@ -48,6 +48,7 @@ function paintForm() {
   $("gage").value = state.request.gage
   $("start").value = isoToLocal(state.request.start)
   $("end").value = isoToLocal(state.request.end)
+  showForcingOption(state.request.forcing)
   $("forcing").value = state.request.forcing
   $("realization").value = state.realization
   $("output").value = state.outputDir
@@ -58,6 +59,21 @@ function paintForm() {
   }
   renderPlan()
   $("run").disabled = state.action === "do not run"
+}
+
+function showForcingOption(id) {
+  const select = $("forcing")
+  if (!id || [...select.options].some((option) => option.value === id)) return
+  const short = id.match(/^NWM_V3_SHORT_RANGE_(\d{2})$/)
+  const medium = id.match(/^NWM_V3_MEDIUM_RANGE_(\d{2})_(\d)$/)
+  const option = document.createElement("option")
+  option.value = id
+  option.textContent = short
+    ? `National Water Model v3 short range, ${short[1]}Z cycle`
+    : medium
+      ? `National Water Model v3 medium range, ${medium[1]}Z cycle, member ${medium[2]}`
+      : id
+  select.append(option)
 }
 
 function samePoint(a, b) {
