@@ -63,6 +63,28 @@ Every USGS gage uses the watershed file from [NGIAB Data Preprocess](https://git
 The geopackage is written to `~/ngiab_preprocess_output/gage-<id>/config/gage-<id>_subset.gpkg`. A later run for the same gage reuses that file. The first subset downloads hydrofabric 2.2 into `~/.ngiab/hydrofabric`. DataStreamCLI receives the file with `-g` and does not call `hfsubset`.
 
 
+## OpenAI key
+
+The agent reads each sentence with the OpenAI model `gpt-5-mini`. The page has no field for the key. Put the key in a local file before you start the app.
+
+From `NextGenHydro`, copy the template and replace its only line with your key:
+
+```bash
+cp .openai-key.local.example .openai-key.local
+chmod 600 .openai-key.local
+```
+
+`.openai-key.local` must hold the key alone on one line, with no spaces. It sits next to `app.py` and is listed in `.gitignore`, so git never commits it. Do not put your key in `.openai-key.local.example`, which is committed.
+
+You can also set the key in the terminal that starts the app:
+
+```bash
+export OPENAI_API_KEY='sk-...'
+python3 app.py
+```
+
+The app uses `.openai-key.local` first and `OPENAI_API_KEY` only when that file is missing. After the page opens, the panel says **OpenAI key loaded.** When it says **No OpenAI key yet**, the app falls back to the local reader, which understands fewer sentences. For example, it does not catch "without t-route", seasons such as "summer 2019", or a year alone.
+
 ## Start the app
 
 From `NextGenHydro`:
