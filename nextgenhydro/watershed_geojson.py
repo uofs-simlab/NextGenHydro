@@ -51,6 +51,19 @@ def hydrofabric_outlet(gpkg: str, gage_id: str) -> dict | None:
     return {"latitude": latitude, "longitude": longitude}
 
 
+def watershed_stats(connection) -> dict:
+    try:
+        catchments, area = connection.execute("SELECT COUNT(*), SUM(areasqkm) FROM divides").fetchone()
+        rivers = connection.execute("SELECT SUM(lengthkm) FROM flowpaths").fetchone()[0]
+    except sqlite3.Error:
+        return {}
+    return {
+        "catchments": int(catchments or 0),
+        "areaKm2": round(float(area), 1) if area is not None else None,
+        "riverKm": round(float(rivers), 1) if rivers is not None else None,
+    }
+
+
 def watershed_geojson(gpkg: str) -> dict:
     stamp = os.stat(gpkg).st_mtime
     hit = _CACHE.get(gpkg)
@@ -104,6 +117,7 @@ def watershed_geojson(gpkg: str) -> dict:
             "flowlines": {"type": "FeatureCollection", "features": flowlines},
             "gage": {"type": "FeatureCollection", "features": gage},
             "bounds": box,
+            "stats": watershed_stats(connection),
         }
         _CACHE[gpkg] = {"stamp": stamp, "body": body}
         return body

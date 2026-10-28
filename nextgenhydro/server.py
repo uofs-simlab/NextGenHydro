@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import urllib.error
+from collections import deque
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,18 +22,19 @@ from .agent import (
     sanitize_agent_patch,
     with_hourly_clocks,
 )
-from .datastream_command import datastream_command
-from .forcings import FORCINGS, is_forcing_id
+from .datastream_command import chosen_warmup_days, datastream_command
+from .forcings import FORCINGS
+from .hydrograph import hydrograph as build_hydrograph
 from .nearest_gages import bounds_for_gages, lookup_nearest_gages
 from .nextgen_gages import nextgen_gage_ids
-from .nlp import agent_system_prompt
+from .nlp import agent_system_prompt, interpret_evaluate
+from .parse_request import read_warmup_days
 from .review import review_plan
 from .place_query import place_query_from_sentence
 from .plan import build_plan, plan_coordinates
 from .realizations import (
     DEFAULT_REALIZATION,
     REALIZATIONS,
-    is_realization_id,
     live_log_path_for,
     log_path_for,
     output_dir_for,
@@ -43,12 +45,13 @@ from .site_name import choose_place_hit, lookup_station_name, lookup_station_poi
 from .watershed import resolve_watershed_geopackage, watershed_geopackage
 from .watershed_geojson import watershed_geojson
 
-ROOT = Path(__file__).resolve().parents[1]
+from .settings import DATASTREAM_ROOT, NGIAB_PREP_PYTHON, OPENAI_MODEL, ROOT
+from .run_check import problems_text, run_problems
+from .setup_check import explain_failure, setup_problems
+
 WEB = ROOT / "web"
-DATASTREAM_ROOT = (ROOT.parent / "NexGen" / "datastreamcli").resolve()
 SCRIPT = DATASTREAM_ROOT / "scripts" / "datastream"
 KEY_FILES = [ROOT / ".openai-key.local", ROOT.parent / "NextGenHydro" / ".openai-key.local"]
-OPENAI_MODEL = "gpt-5-mini"
 WATERSHED_ROOT = Path.home() / "ngiab_preprocess_output"
 LOG_TAIL = 80_000
 
@@ -144,7 +147,7 @@ CHECK_TOOLS = [
     {
         "type": "function",
         "name": "check_dates",
-        "description": "Ask whether the start is before the end.",
+        "description": "Ask whether the start is before the end, and whether a forecast window has already ended.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -232,7 +235,12 @@ def _plan_schema() -> dict:
                 "location": {"type": "string"},
                 "action": {"type": "string", "enum": ["", "run", "dry run", "do not run"]},
                 "logging": {"type": "string", "enum": ["", "verbose"]},
-                "nprocs": {"type": "integer", "minimum": 1, "maximum": 256},
+                "nprocs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 256,
+                    "description": "Process cap for NextGen and forcingprocessor. Same as -n / --NPROCS. Read the sentence for a request to parallelize or to limit cores, CPUs, workers, or processes. Default 4.",
+                },
                 "note": {"type": "string"},
                 "models": {"type": "array", "items": {"type": "string"}},
             },
@@ -258,7 +266,7 @@ def _ask_with_checks(key: str, sentence: str) -> dict | None:
             "input": [
                 {
                     "role": "system",
-                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. Do not choose the realization file in this step. Do not write the plan yet.",
+                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. check_dates also says whether a forecast window has already ended. When it says the dates are already in the past, write that in the note later and set action to do not run. Do not choose the realization file in this step. Do not write the plan yet.",
                 },
                 {"role": "user", "content": sentence},
             ],
@@ -429,6 +437,14 @@ def ask_sentence(sentence: str, _form: dict | None = None) -> dict:
         points["outlet_latitude"],
         points["outlet_longitude"],
     )
+    named_warmup = read_warmup_days(sentence)
+    plan["warmupDays"] = chosen_warmup_days(named_warmup, plan.get("forcing") or "", plan.get("start") or "", plan.get("end") or "")
+    plan["evaluate"] = interpret_evaluate(sentence)
+    if plan["warmupDays"] and f"{plan['warmupDays']} warm-up days" not in plan.get("note", ""):
+        reason = "because the sentence asked for it" if named_warmup else "so soil and groundwater storage can settle before the dates you asked for"
+        plan["note"] = f"{plan.get('note', '')} The run adds {plan['warmupDays']} warm-up days before the start {reason}.".strip()
+    if plan["evaluate"]:
+        plan["note"] = f"{plan.get('note', '')} TEEHR evaluation against USGS observations is on.".strip()
     return {
         "usedModel": answer["usedModel"],
         "note": message.strip(),
@@ -473,6 +489,27 @@ def _focus(sentence: str, gage: str, patch: dict, place_name: str) -> dict | Non
         if hit:
             return {"lng": hit["lng"], "lat": hit["lat"], "zoom": hit["zoom"]}
     return None
+
+
+def check_run(body: dict) -> dict:
+    problems = run_problems(body)
+    command = None
+    status = 400
+    if not any(item["field"] in {"gage", "start", "end", "output"} for item in problems):
+        command = datastream_command(
+            {"gage": body.get("gage") or "", "start": body.get("start") or "", "end": body.get("end") or "", "forcing": body.get("forcing") or ""},
+            {"outputDir": body.get("outputDir") or "", "realization": body.get("realization") or "", "action": body.get("action") or "", "logging": body.get("logging") or "", "nprocs": body.get("nprocs", 4), "warmupDays": body.get("warmupDays"), "evaluate": body.get("evaluate")},
+        )
+    if not problems:
+        if not SCRIPT.exists():
+            problems.append({"field": "", "message": f"DataStreamCLI was not found at {DATASTREAM_ROOT}. Set DATASTREAM_ROOT and restart the app."})
+            status = 500
+        else:
+            root = output_root(body.get("gage") or "", body.get("outputDir") or "")
+            if root and root.exists():
+                problems.append({"field": "output", "message": f"The output folder {output_dir_for('', body.get('outputDir') or '')} already exists. Type a new folder name."})
+                status = 409
+    return {"problems": problems, "command": command, "status": status}
 
 
 def output_root(gage: str, output_dir: str) -> Path | None:
@@ -534,7 +571,7 @@ def ensure_watershed(gage: str, write) -> bool:
         (Path.home() / ".ngiab").mkdir(parents=True, exist_ok=True)
         WATERSHED_ROOT.mkdir(parents=True, exist_ok=True)
         child = subprocess.Popen(
-            ["uvx", "ngiab-prep", "--output_root", str(WATERSHED_ROOT), "-i", f"gage-{gage}", "-s"],
+            ["uvx", "--python", NGIAB_PREP_PYTHON, "ngiab-prep", "--output_root", str(WATERSHED_ROOT), "-i", f"gage-{gage}", "-s"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -545,13 +582,19 @@ def ensure_watershed(gage: str, write) -> bool:
             child.stdin.write(b"y\n" * 5)
             child.stdin.close()
         assert child.stdout is not None
+        seen = deque(maxlen=400)
         for line in child.stdout:
-            write(line.decode("utf-8", "replace"))
+            text = line.decode("utf-8", "replace")
+            seen.append(text)
+            write(text)
         code = child.wait()
         if RUNNING is child:
             RUNNING = None
         if code != 0 or not gpkg.exists():
+            hint = explain_failure("".join(seen))
             write(f"\nWatershed subset failed (exit {code}). DataStreamCLI was not started.\n")
+            if hint:
+                write(f"FIX: {hint}\n")
             return False
         write(f"Watershed geopackage written to {gpkg}\n")
     else:
@@ -616,6 +659,9 @@ class AppHandler(BaseHTTPRequestHandler):
         if url.path == "/api/catalog":
             self._json(200, {"forcings": FORCINGS, "realizations": REALIZATIONS, "defaultRealization": DEFAULT_REALIZATION})
             return
+        if url.path == "/api/setup":
+            self._json(200, {"problems": setup_problems(key_loaded=api_key() != "")})
+            return
         query = parse_qs(url.query)
         if url.path in {"/api/datastream/log", "/api/datastream/live"}:
             gage = (query.get("gage") or [""])[0]
@@ -633,11 +679,17 @@ class AppHandler(BaseHTTPRequestHandler):
             output_dir = (query.get("outputDir") or [""])[0]
             root = output_root(gage, output_dir)
             if not root:
-                self._json(400, {"path": "", "entries": []})
+                self._json(400, {"path": "", "entries": [], "hydrograph": None})
                 return
             directory = root / "ngen-run" / "outputs"
             entries = list_result_files(directory) if directory.is_dir() else []
-            self._json(200, {"path": result_path_for(gage, output_dir), "entries": entries})
+            chart = None
+            if (root / "ngen-run").is_dir():
+                try:
+                    chart = build_hydrograph(root, gage, (query.get("start") or [""])[0], (query.get("end") or [""])[0])
+                except Exception:
+                    chart = None
+            self._json(200, {"path": result_path_for(gage, output_dir), "entries": entries, "hydrograph": chart})
             return
         if url.path == "/api/watershed/status":
             self._watershed_status((query.get("gage") or [""])[0])
@@ -782,6 +834,15 @@ class AppHandler(BaseHTTPRequestHandler):
         if url == "/api/datastream/run":
             self._run()
             return
+        if url == "/api/run/check":
+            try:
+                body = self._read_json()
+            except Exception:
+                self._json(400, {"problems": [{"field": "", "message": "The page sent a request the server could not read."}], "command": None})
+                return
+            checked = check_run(body)
+            self._json(200, {"problems": checked["problems"], "command": checked["command"]})
+            return
         self._text(404, "Not found.\n")
 
     def _run(self) -> None:
@@ -795,36 +856,15 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
         except Exception:
-            self._text(400, "The run request is incomplete.\n")
+            self._text(400, "The page sent a run request the server could not read. Reload the page and try again.\n")
             return
+        checked = check_run(body)
+        if checked["problems"]:
+            self._text(checked["status"], problems_text(checked["problems"]) + "\n")
+            return
+        preview = checked["command"]
         gage = body.get("gage") or ""
-        forcing = body.get("forcing") or ""
-        realization = body.get("realization") or ""
         output_dir = body.get("outputDir") or ""
-        if (
-            not is_gage_id(gage)
-            or not body.get("start")
-            or not body.get("end")
-            or (forcing != "" and not is_forcing_id(forcing))
-            or not is_realization_id(realization)
-            or not is_safe_output_dir(output_dir)
-        ):
-            self._text(400, "The run request is incomplete.\n")
-            return
-        preview = datastream_command(
-            {"gage": gage, "start": body["start"], "end": body["end"], "forcing": forcing},
-            {"outputDir": output_dir, "realization": realization, "action": body.get("action") or "", "logging": body.get("logging") or "", "nprocs": body.get("nprocs", 4)},
-        )
-        if not preview or not preview["ready"]:
-            self._text(400, "The run request is incomplete.\n")
-            return
-        if not SCRIPT.exists():
-            self._text(500, "DataStreamCLI script was not found.\n")
-            return
-        root = output_root(gage, output_dir)
-        if root and root.exists():
-            self._text(409, f"The output folder {output_dir_for(gage, output_dir)} already exists. Type a new folder name and run again.\n")
-            return
         self.send_response(200)
         self.send_header("content-type", "text/plain; charset=utf-8")
         self.send_header("cache-control", "no-cache")
@@ -880,10 +920,17 @@ class AppHandler(BaseHTTPRequestHandler):
         )
         RUNNING = child
         assert child.stdout is not None
+        seen = deque(maxlen=400)
         for line in child.stdout:
-            write(line.decode("utf-8", "replace"))
+            text = line.decode("utf-8", "replace")
+            seen.append(text)
+            write(text)
         code = child.wait()
         write(f"\nDataStreamCLI exited {code}.\n")
+        if code != 0:
+            hint = explain_failure("".join(seen))
+            if hint:
+                write(f"FIX: {hint}\n")
         if RUNNING is child:
             RUNNING = None
         if log_path:
@@ -891,6 +938,14 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    print(f"DataStreamCLI folder: {DATASTREAM_ROOT}", flush=True)
+    problems = setup_problems(key_loaded=api_key() != "")
+    if problems:
+        print("Setup check found these problems:", flush=True)
+        for item in problems:
+            print(f"  - {item['message']} Fix: {item['fix']}", flush=True)
+    else:
+        print("Setup check passed.", flush=True)
     server = ThreadingHTTPServer(("127.0.0.1", 5180), AppHandler)
     print("NextGenHydro Python is at http://127.0.0.1:5180/", flush=True)
     server.serve_forever()

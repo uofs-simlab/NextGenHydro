@@ -21,12 +21,13 @@ cd datastreamcli
 git checkout ngen-app-fixing
 ```
 
-The branch is DataStreamCLI release `v1.7.2` plus fixes this app needs. Tested commit: `6d0c2cc` (October 1, 2026).
+The branch is DataStreamCLI release `v1.7.2` plus fixes this app needs. Tested commit: `13fc292`.
 
 | Commit | What it fixes |
 |---|---|
 | `5f1c90f` | Writes the waterbody column name the geopackage has (`WaterbodyID` or `rl_NHDWaterbodyComID`) into the t-route config. |
 | `6d0c2cc` | Does the same for the length column (`Length_m` or `length_m`) and the gage column (`gage`, `gages`, or `rl_gages`). |
+| `13fc292` | Applies `-V True` (verbose) after the flags are read, and lets the run finish with a message when the final Merkle hashing step fails. |
 
 Hydrofabric versions name these fields differently. Upstream DataStreamCLI writes one fixed set of names, so t-route routing can fail to find a column when the geopackage uses the other name.
 
@@ -39,12 +40,7 @@ Pinned images on that branch. The run script reads them from `versions.yml` and 
 | `awiciroh/ciroh-ngen-image` (NGIAB) | `v1.9.0` |
 | TEEHR | `latest` |
 
-Two fixes in `scripts/datastream` are not committed on the branch yet. A fresh clone does not have them:
-
-- `-V True` (verbose) is applied after the flags are read, so verbose output works.
-- When the final Merkle hashing step fails, the run prints a message and continues. The simulation outputs are already written at that point.
-
-Commit and push those two fixes to `ngen-app-fixing` before handing the branch to a new user.
+One fix in `scripts/datastream` is not committed on the branch yet, so a fresh clone does not have it. `-E True` (TEEHR evaluation) now passes `--data_folder_stem` and `--teehr_evaluation_dir /app/data/teehr` to `awiciroh/ngiab-teehr`, the same way NGIAB's `runTeehr.sh` does. The current TEEHR image stops without those two arguments. Metrics land in `ngen-run/teehr`. Commit and push that fix to `ngen-app-fixing` before a new user turns on **Evaluate against USGS observations**.
 
 ## Required
 
@@ -83,7 +79,22 @@ export OPENAI_API_KEY='sk-...'
 python3 app.py
 ```
 
-The app uses `.openai-key.local` first and `OPENAI_API_KEY` only when that file is missing. After the page opens, the panel says **OpenAI key loaded.** When it says **No OpenAI key yet**, the app falls back to the local reader, which understands fewer sentences. For example, it does not catch "without t-route", seasons such as "summer 2019", or a year alone.
+The app uses `.openai-key.local` first and `OPENAI_API_KEY` only when that file is missing. After the page opens, the panel says **OpenAI key loaded.** When it says **No OpenAI key yet**, the app falls back to the local reader. It reads gauge numbers, dates (including seasons such as "summer 2019", a year alone, and "water year 2021"), forcing names including AORC, model names with or without t-route, a named output folder, warm-up days, and evaluation requests. Place names and free wording need the OpenAI model.
+
+## Settings
+
+Every setting has a default that fits the layout above. Set one only when your machine differs, in the terminal that starts the app:
+
+| Variable | Default | What it changes |
+|---|---|---|
+| `DATASTREAM_ROOT` | `../NexGen/datastreamcli`, next to `NextGenHydro` | Where the DataStreamCLI clone lives. |
+| `OPENAI_MODEL` | `gpt-5-mini` | The OpenAI model that reads sentences. |
+| `NGIAB_PREP_PYTHON` | `3.12` | The Python version `uvx` uses for `ngiab-prep`. Its `exactextract` dependency has no wheels for the newest Python yet. |
+| `DS_TAG` | `datastream` in `versions.yml` | The DataStreamCLI image tag. The app needs 1.7.2 or newer. |
+
+```bash
+DATASTREAM_ROOT=~/code/datastreamcli OPENAI_MODEL=gpt-5 python3 app.py
+```
 
 ## Start the app
 
@@ -93,7 +104,15 @@ From `NextGenHydro`:
 python3 app.py
 ```
 
-Open `http://127.0.0.1:5180/`. **Ask** fills the plan. **Run** starts DataStreamCLI. The output folder must be a new name. DataStreamCLI refuses a folder that already exists.
+Before it serves the page, the app prints the DataStreamCLI folder and checks the setup: the script and realization files, the DataStreamCLI image version, Docker installed and running, `uvx` and a writable uv tools folder, `pigz`, and the OpenAI key. Each problem prints with its fix. The same list appears at the top of the page under **Setup needs attention**, so a missing Docker shows up before **Run**.
+
+Open `http://127.0.0.1:5180/`. **Ask** fills the JSON plan and the form. The form marks each missing or wrong field in red, and **Run** turns on once the plan is complete. **Run** starts DataStreamCLI. The output folder must be a new name. DataStreamCLI refuses a folder that already exists.
+
+For a first-use walkthrough of the JSON plan and the **Run** checks, see [example.md](example.md).
+
+**Warm-up days** start the simulation that many days before **Start** so soil and groundwater storage settle. Retrospective runs default to 30 days. Set the field to 0 to skip. Drop the output before **Start** when you compare with observations. After a run, **Results** plots USGS observations against the NextGen nexus streamflow CSV and shows KGE, NSE, and relative bias. If TEEHR wrote `metrics.csv`, those scores are shown instead. **Evaluate against USGS observations** adds `-E True`. After NextGen, DataStreamCLI runs the TEEHR container, which compares the t-route streamflow at the gauge with USGS observations and NWM 3.0 retrospective. It needs a realization with t-route and past dates.
+
+Retrospective forcing covers fixed archives: NWM v3 from 1979-02-01 to 2023-01-31 23:00 UTC, NWM v2 from 1979-02-01 to 2019-12-31 23:00 UTC. **Run** stays off for dates outside the chosen archive.
 
 ## Not installed on the host
 

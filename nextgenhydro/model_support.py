@@ -1,7 +1,8 @@
 import re
-from pathlib import Path
 
-DOC = Path(__file__).resolve().parents[2] / "NexGen" / "datastreamcli" / "docs" / "NGEN_MODELS.md"
+from .settings import DATASTREAM_ROOT
+
+DOC = DATASTREAM_ROOT / "docs" / "NGEN_MODELS.md"
 
 
 def model_catalog() -> tuple[set[str], set[str]]:

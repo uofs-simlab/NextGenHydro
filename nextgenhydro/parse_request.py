@@ -219,7 +219,7 @@ def read_forcing(text: str) -> str:
     value = text.lower()
     if re.search(r"\b(?:retrospective|retro)\s+v(?:ersion\s*)?2\b", value) or re.search(r"\bv2\s+retrospective\b", value):
         return "NWM_RETRO_V2"
-    if re.search(r"\b(?:retrospective|retro)\s+v(?:ersion\s*)?3\b", value):
+    if re.search(r"\b(?:retrospective|retro)\s+v(?:ersion\s*)?3\b", value) or re.search(r"\baorc\b", value):
         return "NWM_RETRO_V3"
     if re.search(r"\bshort[\s-]*range\b", value):
         return "NWM_V3_SHORT_RANGE"
@@ -277,6 +277,66 @@ def _find_months(text: str) -> list[dict]:
     return found
 
 
+MAX_WARMUP_DAYS = 730
+_WARMUP_WORD = r"(?:warm[\s-]?up|spin[\s-]?up)"
+_WARMUP_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+WARMUP_PATTERN = re.compile(
+    rf"\b(\d+)\s*-?\s*(day|week|month|year)s?\s*(?:of\s+)?(?:model\s+)?{_WARMUP_WORD}"
+    rf"|\b{_WARMUP_WORD}(?:\s+(?:period|time))?\s*(?:of|for|:)?\s*(\d+)\s*-?\s*(day|week|month|year)s?\b",
+    re.I,
+)
+
+
+def read_warmup_days(text: str) -> int:
+    match = WARMUP_PATTERN.search(text)
+    if not match:
+        return 0
+    amount = int(match.group(1) or match.group(3))
+    unit = (match.group(2) or match.group(4)).lower()
+    return min(amount * _WARMUP_UNIT_DAYS[unit], MAX_WARMUP_DAYS)
+
+
+SEASONS = {
+    "spring": (3, 5),
+    "summer": (6, 8),
+    "fall": (9, 11),
+    "autumn": (9, 11),
+    "winter": (12, 2),
+}
+
+
+def _month_end(year: int, month: int) -> str:
+    return to_iso(year, month, calendar.monthrange(year, month)[1], 0, 0) or ""
+
+
+def _find_season(text: str) -> dict | None:
+    match = re.search(r"\b(spring|summer|fall|autumn|winter)\s+(?:of\s+)?((?:19|20)\d{2})\b", text, re.I)
+    if not match:
+        return None
+    first, last = SEASONS[match.group(1).lower()]
+    year = int(match.group(2))
+    end_year = year + 1 if first > last else year
+    start = to_iso(year, first, 1, 0, 0)
+    end = _month_end(end_year, last)
+    return {"start": start, "end": end} if start and end else None
+
+
+def _find_year(text: str) -> dict | None:
+    water = re.search(r"\bwater\s+year\s+((?:19|20)\d{2})\b", text, re.I)
+    if water:
+        year = int(water.group(1))
+        start = to_iso(year - 1, 10, 1, 0, 0)
+        end = to_iso(year, 9, 30, 0, 0)
+        return {"start": start, "end": end} if start and end else None
+    match = re.search(r"\b(?:in|for|during|throughout|over|year)\s+((?:19|20)\d{2})\b(?!\s*[-/\\]\s*\d)", text, re.I)
+    if not match:
+        return None
+    year = int(match.group(1))
+    start = to_iso(year, 1, 1, 0, 0)
+    end = to_iso(year, 12, 31, 0, 0)
+    return {"start": start, "end": end} if start and end else None
+
+
 def parse_request(text: str) -> dict:
     dates = find_dates(text)
     start = ""
@@ -294,7 +354,7 @@ def parse_request(text: str) -> dict:
         start = unassigned.pop(0)["iso"]
     if not end and unassigned:
         end = unassigned.pop(0)["iso"]
-    duration = re.search(r"\b(\d+)\s*-?\s*(hour|hr|day|week)s?\b", text, re.I)
+    duration = re.search(r"\b(\d+)\s*-?\s*(hour|hr|day|week)s?\b", WARMUP_PATTERN.sub(" ", text), re.I)
     if duration and start:
         end = _add_duration(start, int(duration.group(1)), duration.group(2))
     if not start and not end:
@@ -308,6 +368,13 @@ def parse_request(text: str) -> dict:
             first, last = months[0], months[-1]
             start = to_iso(first["year"], first["month"], 1, 0, 0) or ""
             end = to_iso(last["year"], last["month"], calendar.monthrange(last["year"], last["month"])[1], 0, 0) or ""
+    for finder in (_find_season, _find_year):
+        if start or end:
+            break
+        span = finder(text)
+        if span:
+            start = span["start"]
+            end = span["end"]
     forcing = read_forcing(text)
     return {
         "gage": _read_gage(text, dates),

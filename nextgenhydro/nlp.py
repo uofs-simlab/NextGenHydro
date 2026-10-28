@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from .forcings import FORCINGS
 from .parse_request import parse_request
-from .realizations import DEFAULT_REALIZATION, REALIZATIONS, is_realization_id, read_realization
+from .realizations import DEFAULT_REALIZATION, REALIZATIONS, excludes_routing, is_realization_id, read_realization, realization_label
 
 
 def _refuses_run(sentence: str) -> bool:
@@ -47,20 +47,36 @@ def _asks_for_dry_run(sentence: str) -> bool:
 
 
 DEFAULT_NPROCS = 4
+_NPROC_UNITS = r"(?:n[_\s-]?procs?|processes?|processors?|cores?|cpus?|workers?|threads?|ranks?|mpi(?:\s+ranks?)?)"
+_NPROC_NAMED = rf"(?:{_NPROC_UNITS}|process(?:or)?(?:es)?\s+count|number\s+of\s+(?:processes?|processors?|cores?|cpus?|workers?))"
+_NPROC_PARALLEL = r"(?:parallel(?:ize[ds]?|ising|izing|ism)?(?:\s+comput(?:e|ing|ation))?|in\s+parallel)"
 
 
 def interpret_nprocs(sentence: str) -> int:
     match = re.search(
-        r"\b(?:nprocs?|processes|processors|cores)\s*[:=]?\s*(\d{1,3})\b|\b(\d{1,3})\s*(?:nprocs?|processes|processors|cores)\b",
+        rf"(?:-n|--nprocs)\s*[:=]?\s*(\d{{1,3}})\b"
+        rf"|\b{_NPROC_NAMED}\s*(?:to|at|of|[:=])?\s*(\d{{1,3}})\b"
+        rf"|\b{_NPROC_PARALLEL}(?:\s+\w+){{0,4}}\s+(?:across|on|with|using|at|to)\s+(\d{{1,3}})\b"
+        rf"|\b(\d{{1,3}})\s*[-\s]?(?:{_NPROC_UNITS}|way(?:\s+{_NPROC_PARALLEL})?)\b",
         sentence,
         re.I,
     )
     if not match:
         return DEFAULT_NPROCS
-    value = int(match.group(1) or match.group(2))
+    value = int(next(group for group in match.groups() if group))
     if value < 1:
         return DEFAULT_NPROCS
     return min(value, 256)
+
+
+def interpret_evaluate(sentence: str) -> bool:
+    if re.search(r"\b(?:without|no|skip|do not|don't|dont)\s+(?:the\s+)?(?:teehr|evaluat\w*)", sentence, re.I):
+        return False
+    return re.search(
+        r"\bteehr\b|\bevaluat(?:e|ion|ing)\b|\bcompar\w*\b(?:\s+\w+){0,4}\s+(?:with|to|against)\s+(?:the\s+)?(?:usgs|observ\w*|gauge|gage)",
+        sentence,
+        re.I,
+    ) is not None
 
 
 def interpret_logging(sentence: str) -> str:
@@ -197,7 +213,13 @@ def interpret_realization(sentence: str, names: list | None = None, preferred: s
     named = read_realization(sentence)
     missing = unsupported_models(sentence, names)
     if named:
-        return {"realization": named, "source": "named", "note": unsupported_note(missing)}
+        chosen_note = f"Realization: {realization_label(named)}."
+        if "troute" not in named and re.search(r"\b(?:t-route|troute|routing)\b", sentence, re.I):
+            chosen_note = f"Realization: {realization_label(named)}, without t-route as the sentence asks."
+        elif named == "realization_python_lstm_troute.json" and excludes_routing(sentence):
+            chosen_note = "Realization: Python LSTM and t-route. Python LSTM is only packaged with t-route."
+        note = " ".join(part for part in [chosen_note, unsupported_note(missing)] if part)
+        return {"realization": named, "source": "named", "note": note}
     if missing:
         return {"realization": "", "source": "unsupported", "note": unsupported_note(missing)}
     if _asks_to_run(sentence) or _asks_for_realization(sentence) or _asks_for_workflow(sentence):
@@ -215,7 +237,7 @@ def agent_system_prompt() -> str:
             "Do not copy a gage, a date, a forcing, or a folder from an earlier sentence.",
             "A named month such as January 2020 is that whole month. Start is midnight on the first day and end is midnight on the last day.",
             "Call check_gauge, check_coordinates, check_dates, and check_models before the final plan.",
-            "check_gauge says whether the gauge digits are in the NextGen hydrofabric. check_coordinates says whether latitude and longitude are in range. check_dates says whether the start is before the end.",
+            "check_gauge says whether the gauge digits are in the NextGen hydrofabric. check_coordinates says whether latitude and longitude are in range. check_dates says whether the start is before the end, and whether a forecast window has already ended.",
             "Read the sentence and decide which models it means. Do not match words in isolation.",
             "Noah, Noah-OWP, and Noah-OWP-Modular are the same model.",
             "Rust and LSTM together are one model, LSTM Rust. There is no separate model named rust, and there is no model named lstmrust.",
@@ -249,7 +271,10 @@ def agent_system_prompt() -> str:
             "When the sentence does not name a forcing and the dates are more than 45 days ago, set forcing to NWM_RETRO_V3.",
             "When the sentence asks for historical data, the latest historical record, a complete workflow plan, or forcing data, and does not name a forcing, set forcing to NWM_RETRO_V3 even if no dates are given.",
             "Say in the note that no forcing was named and v3 retrospective was chosen. v2 retrospective is the other historical archive.",
+            "AORC means NWM_RETRO_V3, whose forcing over the US is built from AORC; say so in the note.",
+            "A season means its months: spring is March to May, summer is June to August, fall is September to November, winter is December to February of the next year. A bare year means January 1 to December 31.",
             "When the sentence asks for a forecast, or the dates are today or later, and does not name a forcing, the run needs a forecast forcing. Use NWM_V3_SHORT_RANGE when the requested span is 18 hours or less and NWM_V3_MEDIUM_RANGE when it is longer. A 24-hour forecast uses NWM_V3_MEDIUM_RANGE.",
+            "When the sentence asks for a forecast and the named end is already in the past, keep those dates, do not pick a forecast cycle, set action to do not run, and say the dates are already in the past so this time range is not for forecasting.",
             "The app picks the newest forecast cycle for that product and explains the forecast length in the note. Do not write a cycle number yourself.",
             "Leave forcing empty when the sentence does not ask for forcing, historical data, a forecast, or a workflow plan and has no dates.",
             f"realization must be one of: {choices}.",
@@ -269,7 +294,10 @@ def agent_system_prompt() -> str:
             "Stopping before model execution does not choose a realization. Leave realization empty unless the sentence asks for a model or a run.",
             "action is an empty string when the sentence says neither.",
             "logging is verbose when the sentence asks for verbose logging. Otherwise logging is an empty string.",
-            "nprocs is the process count for DataStreamCLI. Use 4 unless the sentence names a count, such as 8 processes.",
+            "nprocs is the process cap for this run. NextGen and forcingprocessor parallelize across processes. Use -n / --NPROCS to cap how many they use.",
+            "Read the sentence and decide whether it asks for that cap. Do not match words in isolation.",
+            "A request to parallelize, to run in parallel, to use parallel computing, or to limit how many cores, CPUs, workers, ranks, or processes the run may use is a request for nprocs when a count is given. The CLI flags -n and --NPROCS are the same request.",
+            "Write that count in nprocs. The range is 1 to 256. If the sentence does not ask for a cap, use 4. Do not invent a count.",
             "outputDir is an empty string unless the user specifically mentioned it. The user types the output folder. Do not invent a folder name.",
             "note is one short sentence about what you filled.",
             "Do not invent a gage or a date. Do not set log paths, result paths, or the live log.",

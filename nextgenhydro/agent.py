@@ -406,6 +406,9 @@ def finish_ask(answer: dict, sentence: str) -> dict:
     from .review import note_from_feedback, review_plan
 
     reviewed = review_plan(sentence, answer["patch"])
-    note = note_from_feedback(answer["patch"].get("note", ""), reviewed["messages"])
+    if answer.get("usedModel"):
+        note = note_from_feedback(answer["patch"].get("note", ""), reviewed["messages"])
+    else:
+        note = _choice_note(answer["patch"].get("note", ""), reviewed["messages"])
     patch = {**reviewed["patch"], "note": note}
     return {**answer, "patch": patch, "note": note, "gages": reviewed.get("gages") or []}

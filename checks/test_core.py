@@ -10,7 +10,7 @@ from nextgenhydro.datastream_command import datastream_command
 from nextgenhydro.nearest_gages import bounds_for_gages, keep_near_stations
 from nextgenhydro.site_name import choose_place_hit
 from nextgenhydro.nlp import agent_system_prompt, interpret_action, interpret_forcing, interpret_logging, interpret_nprocs, interpret_realization
-from nextgenhydro.review import note_from_feedback, review_plan
+from nextgenhydro.review import check_dates, note_from_feedback, review_plan
 from nextgenhydro.realizations import DEFAULT_REALIZATION
 from nextgenhydro.repair_watershed_ids import repair_watershed_ids
 from nextgenhydro.parse_request import parse_request
@@ -232,7 +232,25 @@ assert asked_outlet["outlet_longitude"] == -108.35
 assert abs(asked_outlet["gauge_latitude"] - 39.09859226) < 1e-3
 assert interpret_nprocs("Run a NextGen simulation.") == 4
 assert interpret_nprocs("Run a NextGen simulation with 8 processes.") == 8
+assert interpret_nprocs("Run with 8 cores.") == 8
+assert interpret_nprocs("Run with 16 CPUs.") == 16
+assert interpret_nprocs("Run with 8 workers.") == 8
+assert interpret_nprocs("Run with 8 threads.") == 8
+assert interpret_nprocs("Set nprocs=12.") == 12
+assert interpret_nprocs("process count 6") == 6
+assert interpret_nprocs("number of processes 8") == 8
+assert interpret_nprocs("8-core simulation") == 8
+assert interpret_nprocs("datastream -n 8") == 8
+assert interpret_nprocs("datastream --NPROCS 8") == 8
+assert interpret_nprocs("Run in parallel on 8.") == 8
+assert interpret_nprocs("Use parallel computing with 8.") == 8
+assert interpret_nprocs("Parallelize NextGen with 8.") == 8
+assert interpret_nprocs("8-way parallel computing") == 8
+assert interpret_nprocs("Run 8 days of simulation.") == 4
 assert fallback_answer("Run a NextGen simulation with 8 processes.")["patch"]["nprocs"] == 8
+assert fallback_answer("Run with 8 cores.")["patch"]["nprocs"] == 8
+assert review_plan("Run USGS gauge 01646500 with 8 CPUs.", {"gage": "01646500", "nprocs": 8, "action": "run"})["patch"]["nprocs"] == 8
+assert review_plan("Run USGS gauge 01646500.", {"gage": "01646500", "nprocs": 12, "action": "run"})["patch"]["nprocs"] == 12
 verbose_command = datastream_command(
     {"gage": "09106150", "start": "2020-05-10T00:00", "end": "2020-06-21T00:00", "forcing": "NWM_RETRO_V3"},
     {"outputDir": "./data/palisade", "realization": "realization_sloth_nom_cfe_pet_troute.json", "logging": "verbose"},
@@ -352,6 +370,10 @@ cleared_folder = review_plan(
 )
 assert cleared_folder["patch"]["outputDir"] == ""
 assert "user types the output folder" in agent_system_prompt()
+assert "nprocs is the process cap for this run" in agent_system_prompt()
+assert "NextGen and forcingprocessor parallelize across processes" in agent_system_prompt()
+assert "Read the sentence and decide whether it asks for that cap" in agent_system_prompt()
+assert "Do not invent a count" in agent_system_prompt()
 assert "Rust and LSTM together are one model" in agent_system_prompt()
 assert "Noah, Noah-OWP, and Noah-OWP-Modular are the same model" in agent_system_prompt()
 rust_lstm = "Run a simulation using rust, lstm, without using the t-route model for the watershed upstream of USGS gauge 01646500."
@@ -401,17 +423,23 @@ from nextgenhydro.forecast import plan_forecast
 
 forecast_now = _datetime(2026, 10, 23, 19, 5)
 day_forecast = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", forecast_now)
-assert day_forecast["ok"] and day_forecast["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1"
+assert day_forecast["ok"] and day_forecast["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert day_forecast["start"] == "2026-10-23T12:00" and day_forecast["end"] == "2026-10-25T00:00"
 assert "240 hours" in day_forecast["message"]
 switched = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", forecast_now)
-assert switched["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1" and "in place of short range" in switched["message"]
+assert switched["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0" and "in place of short range" in switched["message"]
 short = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-23T18:00", "2026-10-24T06:00", forecast_now)
 assert short["ok"] and short["forcing"] == "NWM_V3_SHORT_RANGE_17" and short["start"] == "2026-10-23T17:00"
 too_long = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-11-10T00:00", forecast_now)
 assert not too_long["ok"] and "ends before the requested end" in too_long["message"]
-too_old = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-08-01T00:00", "2026-08-02T00:00", forecast_now)
-assert not too_old["ok"] and "30 days" in too_old["message"]
+old_start = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-20T00:00", "2026-10-24T00:00", forecast_now)
+assert old_start["ok"] and old_start["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
+assert old_start["start"] == "2026-10-23T12:00"
+late_now = _datetime(2026, 10, 27, 18, 0)
+past_window = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", late_now)
+assert not past_window["ok"]
+assert past_window["start"] == "2026-10-24T00:00" and past_window["end"] == "2026-10-25T00:00"
+assert "already in the past" in past_window["message"] and "not for forecasting" in past_window["message"]
 assert plan_forecast("NWM_RETRO_V3", "2020-06-01T00:00", "2020-06-02T00:00", forecast_now) is None
 forecast_sentence = "Run a 24-hour NextGen streamflow forecast for the watershed upstream of USGS gauge 01646500, from October 24 to October 25, 2026."
 forecast_review = review_plan(
@@ -419,14 +447,34 @@ forecast_review = review_plan(
     {"gage": "01646500", "start": "2026-10-24T00:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE", "action": "run", "models": []},
     forecast_now,
 )
-assert forecast_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_1"
+assert forecast_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert forecast_review["patch"]["action"] == "run"
 assert any("This is a forecast" in message for message in forecast_review["messages"])
+past_review = review_plan(
+    forecast_sentence,
+    {"gage": "01646500", "start": "2026-10-24T00:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE", "action": "run", "models": []},
+    late_now,
+)
+assert past_review["patch"]["action"] == "do not run"
+assert past_review["patch"]["start"] == "2026-10-24T00:00"
+assert past_review["patch"]["end"] == "2026-10-25T00:00"
+assert past_review["checks"]["check_dates"]["ok"] is False
+assert "not for forecasting" in past_review["checks"]["check_dates"]["message"]
+assert any("already in the past" in message for message in past_review["messages"])
+assert check_dates("2026-10-24T00:00", "2026-10-25T00:00")["ok"]
+assert not check_dates("2026-10-25T00:00", "2026-10-24T00:00")["ok"]
+assert check_dates("2026-10-24T00:00", "2026-10-25T00:00", forecast_sentence, forecast_now)["ok"]
+assert not check_dates("2026-10-24T00:00", "2026-10-25T00:00", forecast_sentence, late_now)["ok"]
+assert "already in the past" in note_from_feedback(
+    "This is a forecast, so National Water Model v3 medium range was chosen.",
+    past_review["messages"],
+)
 forecast_command = datastream_command(
     {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE_12_1"},
     {"outputDir": "./data/forecast", "realization": DEFAULT_REALIZATION, "nprocs": 4},
 )
-assert forecast_command["argv"][:4] == ["-s", "202610230000", "-e", "202610230000"]
+assert forecast_command["argv"][:4] == ["-s", "202610230100", "-e", "202610230100"]
+assert "-C" in forecast_command["argv"] and forecast_command["argv"][forecast_command["argv"].index("-C") + 1] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert forecast_command["ready"]
 bare_command = datastream_command(
     {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE"},
@@ -434,5 +482,96 @@ bare_command = datastream_command(
 )
 assert not bare_command["ready"]
 assert "NWM_V3_MEDIUM_RANGE when it is longer" in agent_system_prompt()
+assert "already in the past" in agent_system_prompt()
+assert "not for forecasting" in agent_system_prompt()
+assert "forecast window has already ended" in agent_system_prompt()
+
+from nextgenhydro.datastream_command import chosen_warmup_days
+from nextgenhydro.hydrograph import read_nex_csv, skill_scores
+from nextgenhydro.parse_request import read_warmup_days
+from nextgenhydro.realizations import read_realization
+from nextgenhydro.review import stated_output_dir
+from nextgenhydro.run_check import run_problems
+from nextgenhydro.setup_check import explain_failure
+from nextgenhydro.nlp import interpret_evaluate
+
+summer = parse_request("Run 01646500 for summer 2019")
+assert (summer["start"], summer["end"]) == ("2019-06-01T00:00", "2019-08-31T00:00")
+winter = parse_request("Run 01646500 for winter 2020")
+assert (winter["start"], winter["end"]) == ("2020-12-01T00:00", "2021-02-28T00:00")
+year = parse_request("Run gauge 01646500 in 2022")
+assert (year["start"], year["end"]) == ("2022-01-01T00:00", "2022-12-31T00:00")
+water_year = parse_request("Run 01646500 for water year 2021")
+assert (water_year["start"], water_year["end"]) == ("2020-10-01T00:00", "2021-09-30T00:00")
+assert parse_request("Use AORC for 01646500 in 2019")["forcing"] == "NWM_RETRO_V3"
+assert read_realization("Run CFE and Noah-OWP without t-route") == "realization_sloth_nom_cfe_pet.json"
+assert read_realization("Run CFE with no routing") == "realization_sloth_nom_cfe_pet.json"
+assert read_realization("Run CFE and Noah-OWP with routing") == "realization_sloth_nom_cfe_pet_troute.json"
+assert read_realization("Run LSTM without t-route") == "realization_rust_lstm.json"
+assert "without t-route" in interpret_realization("Run CFE and Noah-OWP without t-route")["note"]
+assert stated_output_dir("Run it, output folder runs/tusc-2022.") == "runs/tusc-2022"
+assert stated_output_dir("Run it with output folder ../escape") == ""
+assert stated_output_dir("Run USGS 01646500 for June 2021") == ""
+
+warm = parse_request("Run 01646500 from June 1, 2021 to June 7, 2021 with a 30-day warm-up")
+assert (warm["start"], warm["end"]) == ("2021-06-01T00:00", "2021-06-07T00:00")
+assert read_warmup_days("Run it with a 30-day warm-up") == 30
+assert read_warmup_days("Use a spin-up of 1 year") == 365
+assert read_warmup_days("Run 01646500 for 3 days") == 0
+assert interpret_evaluate("Run it and evaluate against USGS observations")
+assert interpret_evaluate("Compare the streamflow with USGS gauges")
+assert not interpret_evaluate("Run it without TEEHR")
+
+ready_body = {
+    "gage": "01646500", "start": "2021-06-01T00:00", "end": "2021-06-07T00:00", "forcing": "NWM_RETRO_V3",
+    "realization": DEFAULT_REALIZATION, "outputDir": "runs/x", "action": "run",
+}
+assert run_problems(ready_body) == []
+assert [item["field"] for item in run_problems({**ready_body, "start": "2023-01-20T00:00", "end": "2023-02-05T00:00"})] == ["end"]
+assert [item["field"] for item in run_problems({**ready_body, "forcing": "NWM_RETRO_V2", "start": "2019-06-01T00:00", "end": "2019-06-07T00:00"})] == []
+assert [item["field"] for item in run_problems({**ready_body, "forcing": "NWM_RETRO_V2", "start": "2020-06-01T00:00", "end": "2020-06-02T00:00"})] == ["end"]
+assert [item["field"] for item in run_problems({**ready_body, "start": "1979-02-10T00:00", "end": "1979-03-01T00:00", "warmupDays": 30})] == ["warmup"]
+assert [item["field"] for item in run_problems({**ready_body, "warmupDays": "abc"})] == ["warmup"]
+assert [item["field"] for item in run_problems({**ready_body, "evaluate": True, "realization": "realization_sloth_nom_cfe_pet.json"})] == ["evaluate"]
+assert [item["field"] for item in run_problems({**ready_body, "end": "2021-06-01T00:00"})] == ["end"]
+assert [item["field"] for item in run_problems({**ready_body, "action": "do not run"})] == ["action"]
+assert [item["field"] for item in run_problems(
+    {**ready_body, "forcing": "NWM_V3_MEDIUM_RANGE_00_1", "start": "2026-10-24T00:00", "end": "2026-10-25T00:00"},
+    now=late_now,
+)] == ["end"]
+assert [item["field"] for item in run_problems({**ready_body, "gage": "12ab"})] == ["gage"]
+
+warm_command = datastream_command(
+    {"gage": "01646500", "start": "2021-06-01T00:00", "end": "2021-06-07T00:00", "forcing": "NWM_RETRO_V3"},
+    {"outputDir": "runs/x", "realization": DEFAULT_REALIZATION, "nprocs": 4, "warmupDays": 30, "evaluate": True},
+)
+assert warm_command["argv"][:4] == ["-s", "202105020000", "-e", "202106070000"]
+assert warm_command["argv"][-2:] == ["-E", "True"]
+assert "30 days early" in warm_command["note"] and "TEEHR" in warm_command["note"]
+
+assert chosen_warmup_days(0, "NWM_RETRO_V3", "2021-06-01T00:00", "2021-06-07T00:00") == 30
+assert chosen_warmup_days(14, "NWM_RETRO_V3", "2021-06-01T00:00", "2021-06-07T00:00") == 14
+assert chosen_warmup_days(0, "NWM_V3_MEDIUM_RANGE_12_1", "2026-10-23T12:00", "2026-10-25T00:00") == 0
+assert chosen_warmup_days(0, "NWM_RETRO_V3", "1979-02-10T00:00", "1979-03-01T00:00") == 9
+perfect = skill_scores(
+    [{"t": "2021-06-01T00:00", "q": 1}, {"t": "2021-06-01T01:00", "q": 2}, {"t": "2021-06-01T02:00", "q": 3}],
+    [{"t": "2021-06-01T00:00", "q": 1}, {"t": "2021-06-01T01:00", "q": 2}, {"t": "2021-06-01T02:00", "q": 3}],
+)
+assert perfect == {"nse": 1.0, "kge": 1.0, "relativeBias": 0.0, "hours": 3, "source": "NextGen nexus CSV compared with USGS instantaneous discharge."}
+from pathlib import Path as _Path
+import tempfile
+with tempfile.TemporaryDirectory() as folder:
+    csv_path = _Path(folder) / "nex-1_output.csv"
+    csv_path.write_text("0, 2021-06-01 00:00:00, 4.5\n1, 2021-06-01 01:00:00, 5.0\n", encoding="utf-8")
+    series = read_nex_csv(csv_path)
+    assert series == [{"t": "2021-06-01T00:00", "q": 4.5}, {"t": "2021-06-01T01:00", "q": 5.0}]
+
+assert "uv python install" in explain_failure("error: no interpreter found for Python 3.14 exactextract")
+assert "Docker" in explain_failure("Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+assert "one hour behind" in explain_failure("AssertionError: Realization start time 2026-10-27 18:00:00+00:00 does not match forcing start time 2026-10-27 19:00:00+00:00")
+assert "forcing_medium_range" in explain_failure("Exception: https://noaa-nwm-pds.s3.amazonaws.com/nwm.20261027/forcing_medium_range_mem1/nwm.t00z.medium_range.forcing_1.f001.conus.nc does not exist")
+assert "shared medium-range forcing" in explain_failure("NoSuchKey")
+assert explain_failure("raster calculated, executing exactextract\nsingle thread -> 3645 weights") == ""
+assert explain_failure("all fine") == ""
 
 print("python checks ok")

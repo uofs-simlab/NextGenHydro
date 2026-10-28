@@ -18,30 +18,37 @@
         <nav>
           <button type="button" data-page="map" class="is-on"><span>Map</span></button>
           <button type="button" data-page="watershed"><span>Watershed</span><span id="mark-watershed" class="nav-live"></span></button>
+          <button type="button" data-page="command"><span>Command</span></button>
           <button type="button" data-page="logs"><span>Logs</span></button>
           <button type="button" data-page="results"><span>Results</span></button>
           <button type="button" data-page="live"><span>Live log</span><span id="mark-live" class="nav-live"></span></button>
         </nav>
       </aside>
         <section class="map-stage" id="stage">
+        <button type="button" id="fold-nav" class="side-fold is-left" aria-expanded="true" aria-label="Shrink the left sidebar" title="Shrink the left sidebar">‹</button>
+        <button type="button" id="fold-panel" class="side-fold is-right" aria-expanded="true" aria-label="Shrink the right sidebar" title="Shrink the right sidebar">›</button>
         <div id="map"></div>
         <div class="legend" id="legend" hidden></div>
         <section class="workspace" id="workspace" hidden>
           <header class="workspace-head">
             <h2 id="page-title">Watershed</h2>
             <span id="page-state"></span>
+            <button type="button" id="copy-command" hidden>Copy</button>
           </header>
           <p id="page-path" class="dock-path"></p>
           <p id="page-note" class="dock-note"></p>
-          <pre id="page-body" class="dock-log"></pre>
+          <pre id="page-body" class="dock-log" tabindex="0"></pre>
+          <div id="page-chart" class="hydrograph" hidden></div>
           <ul id="page-files" class="result-files"></ul>
         </section>
       </section>
       <section class="panel">
         <h2>Ask for a simulation</h2>
+        <div id="setup" class="setup" hidden></div>
         <p id="key-line">Checking the OpenAI key.</p>
         <label>Sentence<textarea id="sentence" rows="4" placeholder="Describe the watershed, the dates, and the forcing."></textarea></label>
         <button type="button" id="ask">Ask</button>
+        <p id="ask-status" class="ask-status" hidden></p>
         <p class="plan-kicker">JSON plan</p>
         <pre id="plan">{}</pre>
         <button type="button" id="copy-plan">Copy</button>
@@ -56,15 +63,18 @@
         -->
         <label>Start<input id="start" type="datetime-local" /></label>
         <label>End<input id="end" type="datetime-local" /></label>
+        <label>Warm-up days<input id="warmup" type="number" min="0" max="730" step="1" value="30" /></label>
+        <p class="field-hint">Starts the simulation this many days early so soil and groundwater storage settle. Retrospective forcing defaults to 30 days. Set 0 to skip.</p>
         <label>Forcing<select id="forcing"></select></label>
         <label>Realization<select id="realization"></select></label>
         <label>Output folder<input id="output" placeholder="./data/my-run" /></label>
         <label>Processes<input id="nprocs" type="number" min="1" max="256" value="4" /></label>
-        <p id="command"></p>
+        <label class="check" id="evaluate-row"><input id="evaluate" type="checkbox" /> Evaluate against USGS observations (TEEHR)</label>
         <div class="actions">
-          <button type="button" id="run">Run</button>
-          <button type="button" id="stop">Stop</button>
+          <button type="button" id="run" disabled>Run</button>
+          <button type="button" id="stop" disabled>Stop</button>
         </div>
+        <div id="message" class="message" hidden></div>
       </section>
     </main>
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>

@@ -1,9 +1,11 @@
 import re
+from datetime import datetime, timezone
 
 from .agent import EMPTY_PATCH, is_gage_id, named_location, sanitize_agent_patch
+from .forcings import coverage_problem
 from .forecast import plan_forecast
 from .model_support import check_models
-from .nlp import interpret_action, interpret_logging, interpret_nprocs, interpret_realization
+from .nlp import interpret_action, interpret_logging, interpret_realization
 from .parse_request import align_hourly_time, hourly_clock_note, parse_request
 
 
@@ -89,15 +91,53 @@ def check_coordinates(lat, lng, sentence: str) -> dict:
     }
 
 
-def check_dates(start: str, end: str) -> dict:
+def check_dates(start: str, end: str, sentence: str = "", now=None) -> dict:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", start or "") or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", end or ""):
         return {"ok": True, "message": ""}
-    if end > start:
-        return {"ok": True, "message": ""}
-    return {
-        "ok": False,
-        "message": f"Start {start.replace('T', ' ')} is not before end {end.replace('T', ' ')}, so this run is not ready.",
-    }
+    if end <= start:
+        return {
+            "ok": False,
+            "message": f"Start {start.replace('T', ' ')} is not before end {end.replace('T', ' ')}, so this run is not ready.",
+        }
+    if sentence and re.search(r"\bforecast", sentence, re.I):
+        try:
+            ended = datetime.strptime(end, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            ended = None
+        clock = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+        if ended and ended <= clock:
+            return {
+                "ok": False,
+                "message": "Those dates are already in the past. A forecast covers upcoming hours, so this time range is not for forecasting and this run is not ready.",
+            }
+    return {"ok": True, "message": ""}
+
+
+def stated_output_dir(sentence: str) -> str:
+    from .agent import is_safe_output_dir
+
+    match = re.search(
+        r"\b(?:output|results?)\s+(?:folder|directory|dir|path)\s*(?:to|as|named|called|at|in|is|=|:)?\s*[\"'`]?([~/.\w][^\s\"'`,;]*)",
+        sentence,
+        re.I,
+    )
+    if not match:
+        return ""
+    folder = match.group(1).rstrip(".")
+    if not folder or ".." in re.split(r"[/\\]", folder) or len(folder) > 500 or not is_safe_output_dir(folder):
+        return ""
+    return folder
+
+
+def _missing_for_run(patch: dict) -> str:
+    missing = []
+    if not patch.get("start") or not patch.get("end"):
+        missing.append("Start and End dates")
+    if not patch.get("forcing"):
+        missing.append("a Forcing")
+    if not missing:
+        return ""
+    return f"The sentence gives no {' or '.join(missing)}. Fill {' and '.join(missing)} in the form before Run."
 
 
 def _draft_models(draft: dict | None) -> list:
@@ -113,8 +153,8 @@ def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
     end = align_hourly_time(incoming.get("end") or parsed.get("end") or "")
     gauge = check_gauge(incoming.get("gage") or "", sentence)
     coordinates = check_coordinates(incoming.get("lat"), incoming.get("lng"), sentence)
-    dates = check_dates(start, end)
-    patch = {**EMPTY_PATCH, **incoming, "start": start, "end": end, "gage": gauge.get("gage") or "", "outputDir": ""}
+    dates = check_dates(start, end, sentence, now)
+    patch = {**EMPTY_PATCH, **incoming, "start": start, "end": end, "gage": gauge.get("gage") or "", "outputDir": stated_output_dir(sentence)}
     if coordinates.get("clear"):
         patch["gage"] = ""
         patch["lat"] = None
@@ -139,7 +179,7 @@ def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
         action = "do not run"
     patch["action"] = action
     patch["logging"] = interpret_logging(sentence)
-    patch["nprocs"] = interpret_nprocs(sentence)
+    patch["nprocs"] = incoming.get("nprocs") or 4
     messages = [item["message"] for item in (gauge, coordinates, dates) if item.get("message")]
     if skips_forcing_download(sentence):
         patch["forcing"] = ""
@@ -172,6 +212,17 @@ def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
     clock = hourly_clock_note(incoming.get("start") or parsed.get("start") or "", incoming.get("end") or parsed.get("end") or "")
     if clock:
         messages.append(clock)
+    outside = coverage_problem(patch.get("forcing") or "", patch.get("start") or "", patch.get("end") or "")
+    if outside:
+        messages.append(outside)
+    if patch.get("forcing") == "NWM_RETRO_V3" and re.search(r"\bAORC\b", sentence, re.I):
+        messages.append("AORC is read as NWM v3 retrospective, whose forcing over the US is built from AORC.")
+    if action in {"run", "dry run"} and not skips_forcing_download(sentence):
+        missing = _missing_for_run(patch)
+        if missing:
+            messages.append(missing)
+    if patch["outputDir"]:
+        messages.append(f"Output folder {patch['outputDir']} is taken from the sentence.")
     return {
         "patch": patch,
         "messages": messages,
@@ -210,8 +261,14 @@ def _follows_feedback(note: str, facts: list[str]) -> bool:
         "No model was named",
         "not supported in this repo",
         "This is a forecast",
+        "already in the past",
+        "not for forecasting",
         "nearest NextGen gauge",
         "No NextGen gauge was found",
+        "AORC",
+        "forcing covers",
+        "before Run",
+        "Output folder",
     )
     for fact in facts:
         if fact in note:

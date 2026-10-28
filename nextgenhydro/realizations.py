@@ -41,11 +41,26 @@ def live_log_path_for(_gage: str, output_dir: str) -> str:
     return _under_output(output_dir, "logs/nextgenhydro.log")
 
 
+def realization_label(realization_id: str) -> str:
+    return next((item["label"] for item in REALIZATIONS if item["id"] == realization_id), realization_id)
+
+
+def excludes_routing(text: str) -> bool:
+    import re
+
+    target = r"(?:t-route|troute|routing)\b"
+    return re.search(
+        rf"\b(?:without|not using|do not use|don't use|dont use)\b(?:\s+[\w-]+){{0,6}}?\s+{target}|\bno\s+{target}",
+        text,
+        re.I,
+    ) is not None
+
+
 def read_realization(text: str) -> str:
     value = text.lower()
     import re
 
-    troute = re.search(r"\b(?:t-route|troute)\b", value) is not None
+    troute = re.search(r"\b(?:t-route|troute|routing)\b", value) is not None and not excludes_routing(value)
     lstm = re.search(r"\blstm\b", value) is not None
     rust = re.search(r"\brust\b", value) is not None
     python = re.search(r"\bpython\b", value) is not None

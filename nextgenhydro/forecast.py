@@ -27,7 +27,7 @@ def _floor(moment: datetime, every: int) -> datetime:
 def _forcing_id(kind: str, cycle: datetime) -> str:
     if kind == "short":
         return f"NWM_V3_SHORT_RANGE_{cycle.hour:02d}"
-    return f"NWM_V3_MEDIUM_RANGE_{cycle.hour:02d}_1"
+    return f"NWM_V3_MEDIUM_RANGE_{cycle.hour:02d}_0"
 
 
 def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = None) -> dict | None:
@@ -36,17 +36,25 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
         return None
     now = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
     asked_start, asked_end = _parse(start), _parse(end)
+    if asked_end and asked_end <= now:
+        bare = "NWM_V3_SHORT_RANGE" if kind == "short" else "NWM_V3_MEDIUM_RANGE"
+        return {
+            "ok": False,
+            "forcing": bare,
+            "start": start,
+            "end": end,
+            "message": "Those dates are already in the past. A forecast covers upcoming hours, so this time range is not for forecasting and this run is not ready.",
+        }
     asked_hours = (asked_end - asked_start).total_seconds() / 3600 if asked_start and asked_end else 0
     switched = kind == "short" and asked_hours > PRODUCTS["short"]["hours"]
     if switched:
         kind = "medium"
     product = PRODUCTS[kind]
     newest = _floor(now - timedelta(hours=product["ready_after"]), product["every"])
-    cycle = min(_floor(asked_start, product["every"]), newest) if asked_start else newest
+    cycle = newest
     last_hour = cycle + timedelta(hours=product["hours"] - 1)
     forcing_id = _forcing_id(kind, cycle)
     issued = f"{cycle:%Y-%m-%d} {cycle:%H}Z"
-    member = ", member 1" if kind == "medium" else ""
     lead = f"This is a forecast, so {product['label']} was chosen"
     if switched:
         lead = f"This is a forecast longer than 18 hours, so {product['label']} was chosen in place of short range"
@@ -65,7 +73,7 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
             "forcing": forcing_id,
             "start": _iso(cycle),
             "end": end,
-            "message": f"{lead}: the forecast issued {issued}{member}. {span}, which ends before the requested end {end.replace('T', ' ')}, so this run is not ready.",
+            "message": f"{lead}: the forecast issued {issued}. {span}, which ends before the requested end {end.replace('T', ' ')}, so this run is not ready.",
         }
     covers = f", which covers the requested end {end.replace('T', ' ')}" if asked_end else ""
     return {
@@ -73,5 +81,5 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
         "forcing": forcing_id,
         "start": _iso(cycle),
         "end": end or _iso(last_hour),
-        "message": f"{lead}: the forecast issued {issued}{member}. {span}{covers}. Start is the forecast issue time.",
+        "message": f"{lead}: the newest forecast issued {issued}. {span}{covers}. Start is the forecast issue time.",
     }
