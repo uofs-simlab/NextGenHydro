@@ -112,6 +112,15 @@ NLP_RULES = [
 ]
 
 
+def _default_stack_note(sentence: str) -> str:
+    from .model_support import sentence_names_framework
+
+    label = _unnamed_label()
+    if sentence_names_framework(sentence):
+        return f"NextGen is the modeling framework, not a catchment model, so {label} was chosen."
+    return f"No model was named. Choose {label}."
+
+
 def _historical_period(iso: str) -> bool:
     match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", iso)
     if not match:
@@ -190,8 +199,10 @@ def realization_for_resolved(sentence: str, names: list | None) -> str:
 
 
 def interpret_realization(sentence: str, names: list | None = None, preferred: str = "") -> dict:
-    from .model_support import unsupported_models, unsupported_note
+    from .model_support import catalog_model_names, unsupported_models, unsupported_note
 
+    if names is not None:
+        names = catalog_model_names(names)
     if names is not None or preferred:
         resolved = realization_for_resolved(sentence, names)
         if resolved and (not preferred or not is_realization_id(preferred)):
@@ -202,13 +213,19 @@ def interpret_realization(sentence: str, names: list | None = None, preferred: s
         if preferred and is_realization_id(preferred):
             missing = [name for name in missing if not _covered_by_realization(name, preferred)]
             if not missing:
-                return {"realization": preferred, "source": "named", "note": ""}
+                note = ""
+                if (
+                    preferred == DEFAULT_REALIZATION
+                    and not names
+                    and (_asks_to_run(sentence) or _asks_for_realization(sentence) or _asks_for_workflow(sentence))
+                ):
+                    note = _default_stack_note(sentence)
+                return {"realization": preferred, "source": "chosen" if note else "named", "note": note}
             return {"realization": "", "source": "unsupported", "note": unsupported_note(missing)}
         if missing:
             return {"realization": "", "source": "unsupported", "note": unsupported_note(missing)}
         if not names and (_asks_to_run(sentence) or _asks_for_realization(sentence) or _asks_for_workflow(sentence)):
-            rule = NLP_RULES[0]
-            return {"realization": rule["realization"], "source": "chosen", "note": rule["note"]}
+            return {"realization": NLP_RULES[0]["realization"], "source": "chosen", "note": _default_stack_note(sentence)}
         return {"realization": "", "source": "none", "note": ""}
     named = read_realization(sentence)
     missing = unsupported_models(sentence, names)
@@ -223,8 +240,7 @@ def interpret_realization(sentence: str, names: list | None = None, preferred: s
     if missing:
         return {"realization": "", "source": "unsupported", "note": unsupported_note(missing)}
     if _asks_to_run(sentence) or _asks_for_realization(sentence) or _asks_for_workflow(sentence):
-        rule = NLP_RULES[0]
-        return {"realization": rule["realization"], "source": "chosen", "note": rule["note"]}
+        return {"realization": NLP_RULES[0]["realization"], "source": "chosen", "note": _default_stack_note(sentence)}
     return {"realization": "", "source": "none", "note": ""}
 
 
@@ -239,6 +255,8 @@ def agent_system_prompt() -> str:
             "Call check_gauge, check_coordinates, check_dates, and check_models before the final plan.",
             "check_gauge says whether the gauge digits are in the NextGen hydrofabric. check_coordinates says whether latitude and longitude are in range. check_dates says whether the start is before the end, and whether a forecast window has already ended.",
             "Read the sentence and decide which models it means. Do not match words in isolation.",
+            "NextGen, NGEN, NGIAB, and NextGen in a Box are the modeling framework, not a catchment model. A NextGen simulation that does not name CFE, Noah-OWP, PET, t-route, LSTM, or SLOTH uses realization_sloth_nom_cfe_pet_troute.json. Do not pass NextGen to check_models.",
+            "When that happens, say in the note that NextGen is the modeling framework, not a catchment model, so CFE, PET, Noah-OWP, and t-route was chosen.",
             "Noah, Noah-OWP, and Noah-OWP-Modular are the same model.",
             "Rust and LSTM together are one model, LSTM Rust. There is no separate model named rust, and there is no model named lstmrust.",
             "LSTM Rust without t-route uses realization_rust_lstm.json. LSTM Rust with t-route uses realization_rust_lstm_troute.json.",
@@ -286,7 +304,7 @@ def agent_system_prompt() -> str:
             "When the sentence names SLOTH and t-route without CFE, PET, or Noah-OWP, use realization_sloth_troute.json.",
             "When the sentence asks for a realization, a realization configuration, BMI inputs, model inputs, or a complete workflow plan, look for a named model. If none is named, set realization to realization_sloth_nom_cfe_pet_troute.json.",
             "When the sentence asks to run or simulate and does not name a model, set realization to realization_sloth_nom_cfe_pet_troute.json.",
-            "That choice is CFE, PET, Noah-OWP, and t-route. Say in the note that no model was named and that stack was chosen.",
+            "That choice is CFE, PET, Noah-OWP, and t-route. When the sentence named NextGen as the simulation, say that NextGen is the modeling framework, not a catchment model, so that stack was chosen. When the sentence named no catchment model and no NextGen, say that no model was named and that stack was chosen.",
             "A request not to run still keeps that realization when the sentence asked for one.",
             "action is dry run when the sentence asks for a dry run. A dry run still fills the gage, dates, forcing, and realization.",
             "action is run when the sentence asks to run, simulate, or execute and does not ask for a dry run.",

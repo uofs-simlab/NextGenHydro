@@ -48,6 +48,17 @@ def _appears(sentence: str, name: str) -> bool:
     return re.search(r"\b" + r"[^A-Za-z0-9]*".join(parts) + r"\b", sentence, re.I) is not None
 
 
+FRAMEWORK_KEYS = {"nextgen", "ngen", "ngiab", "nextgeninabox", "nextgenhydro", "nextgeninthebox"}
+
+
+def is_framework_name(name: str) -> bool:
+    return _norm(name) in FRAMEWORK_KEYS
+
+
+def sentence_names_framework(sentence: str) -> bool:
+    return re.search(r"\b(?:next[\s-]*gen(?:eration)?|ngen|ngiab)\b", sentence or "", re.I) is not None
+
+
 def _clean_names(names: list | None) -> list[str]:
     cleaned = []
     for name in names or []:
@@ -59,6 +70,10 @@ def _clean_names(names: list | None) -> list[str]:
     return cleaned
 
 
+def catalog_model_names(names: list | None) -> list[str]:
+    return [name for name in _clean_names(names) if not is_framework_name(name)]
+
+
 def unsupported_models(sentence: str, extra: list | None = None) -> list[str]:
     supported = _supported_keys()
     _supported_names, later = model_catalog()
@@ -68,10 +83,10 @@ def unsupported_models(sentence: str, extra: list | None = None) -> list[str]:
         if not _appears(sentence, name):
             continue
         key = _norm(name)
-        if key and key not in seen and key not in supported:
+        if key and key not in seen and key not in supported and key not in FRAMEWORK_KEYS:
             seen.add(key)
             found.append(name)
-    for name in _clean_names(extra):
+    for name in catalog_model_names(extra):
         key = _norm(name)
         if not key or key in seen or key in supported:
             continue

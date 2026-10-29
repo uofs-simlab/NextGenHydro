@@ -123,6 +123,15 @@ function paintRun() {
   const bad = new Set(state.runProblems.map((item) => item.field))
   for (const id of ["gage", "start", "end", "forcing", "realization", "output", "warmup"]) $(id).classList.toggle("is-invalid", bad.has(id))
   $("evaluate-row").classList.toggle("is-invalid", bad.has("evaluate"))
+  const outputProblem = state.runProblems.find((item) => item.field === "output")
+  const outputHint = $("output-hint")
+  if (outputProblem && $("output").value.trim()) {
+    outputHint.textContent = outputProblem.message
+    outputHint.classList.add("is-warn")
+  } else {
+    outputHint.textContent = "Use a new folder name. DataStreamCLI will not overwrite a folder that already exists."
+    outputHint.classList.remove("is-warn")
+  }
   $("run").disabled = running || state.runProblems.length > 0
   $("stop").disabled = !running || state.stopRequested
   if (state.page === "command") paintCommandPage()
@@ -561,6 +570,7 @@ async function refreshStatus() {
 }
 
 let pageTimer = 0
+let runAbort = null
 
 function setMapInteractive(on) {
   for (const name of ["boxZoom", "dragPan", "dragRotate", "scrollZoom", "keyboard", "doubleClickZoom", "touchZoomRotate"]) {
@@ -981,14 +991,25 @@ $("run").addEventListener("click", async () => {
   state.runOutput = ""
   state.runMessage = { kind: "info", text: "Running. Open the Live log to follow each step." }
   paintRun()
+  runAbort = new AbortController()
   let response
   try {
     response = await fetch("/api/datastream/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(runBody()),
+      signal: runAbort.signal,
     })
-  } catch {
+  } catch (error) {
+    if (state.stopRequested || (error && error.name === "AbortError")) {
+      const outcome = runOutcome()
+      state.runState = outcome.runState
+      state.runMessage = outcome.message
+      state.stopRequested = false
+      if (state.page === "live" || state.page === "logs") loadPage(state.page)
+      paintRun()
+      return
+    }
     state.runState = "idle"
     state.runMessage = { kind: "error", text: "The app server did not answer. Is python3 app.py still running?" }
     paintRun()
@@ -1093,9 +1114,12 @@ $("copy-plan").addEventListener("click", async () => {
 $("stop").addEventListener("click", () => {
   if (state.runState !== "running") return
   state.stopRequested = true
-  state.runMessage = { kind: "info", text: "Stopping. The status changes when DataStreamCLI has ended." }
+  state.runState = "stopped"
+  state.runMessage = { kind: "info", text: "Stopped. The output folder keeps what was written before Stop." }
   paintRun()
   fetch("/api/datastream/stop", { method: "POST" }).catch(() => {})
+  if (runAbort) runAbort.abort()
+  if (state.page === "live" || state.page === "logs") loadPage(state.page)
 })
 for (const id of ["gage", "start", "end", "forcing", "realization", "output", "nprocs", "warmup", "evaluate", "lat", "lng"]) {
   if (!$(id)) continue

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import urllib.error
@@ -56,9 +57,95 @@ WATERSHED_ROOT = Path.home() / "ngiab_preprocess_output"
 LOG_TAIL = 80_000
 
 RUNNING: subprocess.Popen | None = None
+RUN_MOUNTS: list[str] = []
+STOP_REQUESTED = False
 WATERSHED_BUSY = False
 WATERSHED_BUILD: dict | None = None
 LOCK = threading.Lock()
+
+
+def docker_uses_mount(mount: str, sources: str) -> bool:
+    if not mount or not sources:
+        return False
+    try:
+        target = os.path.realpath(mount)
+    except OSError:
+        target = mount
+    for part in sources.split():
+        try:
+            source = os.path.realpath(part)
+        except OSError:
+            source = part
+        if source == target or source.startswith(target + os.sep) or target.startswith(source + os.sep):
+            return True
+    return False
+
+
+def _kill_group(child: subprocess.Popen, sig: int = signal.SIGTERM) -> None:
+    if child.poll() is not None:
+        return
+    try:
+        os.killpg(child.pid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            child.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _docker_kill_mounts(mounts: list[str]) -> None:
+    paths = [item for item in mounts if item]
+    if not paths:
+        return
+    try:
+        listed = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return
+    ids = listed.stdout.split()
+    if not ids:
+        return
+    try:
+        inspected = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Id}} {{range .Mounts}}{{.Source}} {{end}}", *ids],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    victims = []
+    for line in inspected.stdout.splitlines():
+        cid, _, sources = line.partition(" ")
+        if cid and any(docker_uses_mount(mount, sources) for mount in paths):
+            victims.append(cid)
+    if not victims:
+        return
+    try:
+        subprocess.run(["docker", "kill", *victims], capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def stop_running() -> None:
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    with LOCK:
+        child = RUNNING
+        mounts = list(RUN_MOUNTS)
+        if WATERSHED_BUSY:
+            mounts.append(str(WATERSHED_ROOT))
+    if child and child.poll() is None:
+        _kill_group(child)
+    _docker_kill_mounts(mounts)
+    if child and child.poll() is None:
+        try:
+            child.wait(timeout=0.4)
+        except subprocess.TimeoutExpired:
+            _kill_group(child, signal.SIGKILL)
+            try:
+                child.wait(timeout=0.4)
+            except subprocess.TimeoutExpired:
+                child.kill()
 
 
 def api_key() -> str:
@@ -161,7 +248,7 @@ CHECK_TOOLS = [
     {
         "type": "function",
         "name": "check_models",
-        "description": "Pass the catalog model the sentence means after you have read it. Noah means Noah-OWP-Modular. Rust and LSTM together mean the one model LSTM Rust. Do not pass a fragment such as rust as its own model. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET, so pass PET. without, not using, and do not use exclude that model, so do not pass an excluded model. This function searches the DataStreamCLI list and says which resolved names are not supported. Pass an empty list when the sentence names no model.",
+        "description": "Pass the catalog model the sentence means after you have read it. NextGen, NGEN, and NGIAB are the framework, not a catchment model, so do not pass them. Noah means Noah-OWP-Modular. Rust and LSTM together mean the one model LSTM Rust. Do not pass a fragment such as rust as its own model. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET, so pass PET. without, not using, and do not use exclude that model, so do not pass an excluded model. This function searches the DataStreamCLI list and says which resolved names are not supported. Pass an empty list when the sentence names no catchment model.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -266,7 +353,7 @@ def _ask_with_checks(key: str, sentence: str) -> dict | None:
             "input": [
                 {
                     "role": "system",
-                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET. without, not using, and do not use exclude that model. An empty models list means the sentence named no model. check_dates also says whether a forecast window has already ended. When it says the dates are already in the past, write that in the note later and set action to do not run. Do not choose the realization file in this step. Do not write the plan yet.",
+                    "content": "Read the sentence for its meaning, then call check_gauge, check_coordinates, check_dates, and check_models. Resolve model words before you pass them. NextGen, NGEN, and NGIAB are the modeling framework, not a catchment model, so pass an empty models list for a NextGen simulation that does not name CFE, Noah-OWP, PET, t-route, LSTM, or SLOTH. Noah means Noah-OWP-Modular. Rust and LSTM together are the one model LSTM Rust, so pass LSTM Rust and do not pass rust by itself. A request for routing or a compatible routing configuration means t-route, so pass t-route. A compatible PET formulation means PET. without, not using, and do not use exclude that model. An empty models list means the sentence named no catchment model. check_dates also says whether a forecast window has already ended. When it says the dates are already in the past, write that in the note later and set action to do not run. Do not choose the realization file in this step. Do not write the plan yet.",
                 },
                 {"role": "user", "content": sentence},
             ],
@@ -564,18 +651,21 @@ def _write_both(chunks: list[str], handler, text: str) -> None:
 
 
 def ensure_watershed(gage: str, write) -> bool:
-    global RUNNING, WATERSHED_BUSY
+    global RUNNING, RUN_MOUNTS
     gpkg = Path(resolve_watershed_geopackage(gage, str(Path.home())))
     if not gpkg.exists():
         write(f"Building the watershed for USGS {gage} with NGIAB Data Preprocess.\n")
         (Path.home() / ".ngiab").mkdir(parents=True, exist_ok=True)
         WATERSHED_ROOT.mkdir(parents=True, exist_ok=True)
+        with LOCK:
+            RUN_MOUNTS = [str(WATERSHED_ROOT)]
         child = subprocess.Popen(
             ["uvx", "--python", NGIAB_PREP_PYTHON, "ngiab-prep", "--output_root", str(WATERSHED_ROOT), "-i", f"gage-{gage}", "-s"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            start_new_session=True,
         )
         RUNNING = child
         if child.stdin:
@@ -814,7 +904,10 @@ class AppHandler(BaseHTTPRequestHandler):
             if not sentence:
                 self._json(400, {"usedModel": False, "note": "Write a sentence first."})
                 return
-            self._json(200, ask_sentence(sentence, body))
+            try:
+                self._json(200, ask_sentence(sentence, body))
+            except Exception:
+                self._json(500, {"usedModel": False, "note": "The sentence could not be read. Try Ask again."})
             return
         if url == "/api/hydrofabric/gages":
             try:
@@ -826,9 +919,7 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(200, {"ids": nextgen_gage_ids([item for item in ids if isinstance(item, str)][:200])})
             return
         if url == "/api/datastream/stop":
-            global RUNNING
-            if RUNNING and RUNNING.poll() is None:
-                RUNNING.terminate()
+            stop_running()
             self._text(200, "Stopped.\n")
             return
         if url == "/api/datastream/run":
@@ -846,13 +937,14 @@ class AppHandler(BaseHTTPRequestHandler):
         self._text(404, "Not found.\n")
 
     def _run(self) -> None:
-        global RUNNING, WATERSHED_BUSY
+        global RUNNING, RUN_MOUNTS, STOP_REQUESTED, WATERSHED_BUSY
         if RUNNING and RUNNING.poll() is None:
             self._text(409, "A DataStreamCLI run is already going.\n")
             return
         if WATERSHED_BUSY:
             self._text(409, "The watershed file is still being prepared.\n")
             return
+        STOP_REQUESTED = False
         try:
             body = self._read_json()
         except Exception:
@@ -911,12 +1003,16 @@ class AppHandler(BaseHTTPRequestHandler):
         shown = watershed_geopackage(gage)
         absolute = resolve_watershed_geopackage(gage, str(Path.home()))
         argv = [absolute if item == shown else item for item in argv]
+        folder = output_root(gage, output_dir)
+        with LOCK:
+            RUN_MOUNTS = [str(folder)] if folder else []
         child = subprocess.Popen(
             ["bash", str(SCRIPT), *argv],
             cwd=DATASTREAM_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=os.environ.copy(),
+            start_new_session=True,
         )
         RUNNING = child
         assert child.stdout is not None
@@ -926,11 +1022,14 @@ class AppHandler(BaseHTTPRequestHandler):
             seen.append(text)
             write(text)
         code = child.wait()
-        write(f"\nDataStreamCLI exited {code}.\n")
-        if code != 0:
-            hint = explain_failure("".join(seen))
-            if hint:
-                write(f"FIX: {hint}\n")
+        if STOP_REQUESTED:
+            write("\nStopped by the user.\n")
+        else:
+            write(f"\nDataStreamCLI exited {code}.\n")
+            if code != 0:
+                hint = explain_failure("".join(seen))
+                if hint:
+                    write(f"FIX: {hint}\n")
         if RUNNING is child:
             RUNNING = None
         if log_path:

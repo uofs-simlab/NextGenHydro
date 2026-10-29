@@ -67,6 +67,7 @@
         <p class="field-hint">Starts the simulation this many days early so soil and groundwater storage settle. Retrospective forcing defaults to 30 days. Set 0 to skip.</p>
         <label>Forcing<select id="forcing"></select></label>
         <label>Realization<select id="realization"></select></label>
+        <p id="output-hint" class="field-hint">Use a new folder name. DataStreamCLI will not overwrite a folder that already exists.</p>
         <label>Output folder<input id="output" placeholder="./data/my-run" /></label>
         <label>Processes<input id="nprocs" type="number" min="1" max="256" value="4" /></label>
         <label class="check" id="evaluate-row"><input id="evaluate" type="checkbox" /> Evaluate against USGS observations (TEEHR)</label>

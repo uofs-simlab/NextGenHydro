@@ -1,15 +1,17 @@
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nextgenhydro.agent import drop_unknown_gage, fallback_answer, finish_ask, flag_inverted_dates, location_after_gage_pick, named_location, read_named_coordinates, restore_known_gage, sanitize_agent_patch, with_valid_gage_point
 from nextgenhydro.plan import build_plan, plan_coordinates
-from nextgenhydro.nextgen_gages import gage_in_hydrofabric
+from nextgenhydro.nextgen_gages import gage_in_hydrofabric, nextgen_gage_ids
 from nextgenhydro.datastream_command import datastream_command
 from nextgenhydro.nearest_gages import bounds_for_gages, keep_near_stations
 from nextgenhydro.site_name import choose_place_hit
 from nextgenhydro.nlp import agent_system_prompt, interpret_action, interpret_forcing, interpret_logging, interpret_nprocs, interpret_realization
+from nextgenhydro.model_support import check_models
 from nextgenhydro.review import check_dates, note_from_feedback, review_plan
 from nextgenhydro.realizations import DEFAULT_REALIZATION
 from nextgenhydro.repair_watershed_ids import repair_watershed_ids
@@ -180,6 +182,9 @@ assert "-V" not in command["argv"]
 assert command["argv"][command["argv"].index("-n") + 1] == "4"
 assert gage_in_hydrofabric("01646500") is True
 assert gage_in_hydrofabric("99999999") is False
+with ThreadPoolExecutor(max_workers=8) as pool:
+    assert list(pool.map(gage_in_hydrofabric, ["01646500"] * 8)) == [True] * 8
+assert nextgen_gage_ids(["01646500", "99999999"]) == ["01646500"]
 fake = "Run NextGen for USGS gage 99999999 from June 1–5, 2020."
 rejected = finish_ask(fallback_answer(fake), fake)["patch"]
 assert rejected["gage"] == ""
@@ -295,7 +300,8 @@ assert restored["action"] == "run"
 assert restored["forcing"] == ""
 assert restored["realization"] == "realization_sloth_nom_cfe_pet_troute.json"
 assert "not a NextGen" not in restored["note"]
-assert "No model was named" in restored["note"]
+assert "modeling framework, not a catchment model" in restored["note"]
+assert "CFE, PET, Noah-OWP, and t-route" in restored["note"]
 assert "copy those digits into gage" in agent_system_prompt()
 assert "check_gauge" in agent_system_prompt()
 assert "check_models" in agent_system_prompt()
@@ -334,6 +340,40 @@ assert "Summa is a hydrologic model" in summa_choice["note"]
 assert "not supported in this repo for now" in summa_choice["note"]
 assert "No model was named" not in summa_choice["note"]
 assert interpret_realization("Run a NextGen simulation for USGS gauge 09106150.", ["HBV"])["source"] == "unsupported"
+nextgen_as_model = "Run a 24-hour NextGen simulation above USGS gauge 09106150, from 20 June 2020 through 21 June 2020, using National Water Model retrospective forcing."
+assert check_models(nextgen_as_model, ["NextGen"])["ok"]
+assert check_models(nextgen_as_model, ["NextGen"])["unsupported"] == []
+nextgen_choice = interpret_realization(nextgen_as_model, ["NextGen"])
+assert nextgen_choice["source"] == "chosen"
+assert nextgen_choice["realization"] == DEFAULT_REALIZATION
+assert "modeling framework, not a catchment model" in nextgen_choice["note"]
+assert "CFE, PET, Noah-OWP, and t-route" in nextgen_choice["note"]
+assert "not supported" not in (nextgen_choice.get("note") or "")
+nextgen_review = review_plan(
+    nextgen_as_model,
+    {
+        "gage": "09106150",
+        "start": "2020-06-20T00:00",
+        "end": "2020-06-21T00:00",
+        "forcing": "NWM_RETRO_V3",
+        "realization": DEFAULT_REALIZATION,
+        "action": "run",
+        "models": ["NextGen"],
+        "note": "NextGen is a hydrologic model. It is not supported in this repo for now, so this run is not ready.",
+    },
+)
+assert nextgen_review["patch"]["realization"] == DEFAULT_REALIZATION
+assert nextgen_review["patch"]["action"] == "run"
+assert "not supported" not in " ".join(nextgen_review["messages"])
+assert "modeling framework, not a catchment model" in " ".join(nextgen_review["messages"])
+nextgen_note = note_from_feedback(
+    "USGS 09106150 is a NextGen gauge. NextGen is a hydrologic model. It is not supported in this repo for now, so this run is not ready.",
+    nextgen_review["messages"],
+)
+assert "not supported" not in nextgen_note
+assert "modeling framework, not a catchment model" in nextgen_note
+assert "CFE, PET, Noah-OWP, and t-route was chosen" in agent_system_prompt()
+assert "modeling framework, not a catchment model" in agent_system_prompt()
 assert interpret_realization("Simulate a watershed near Denver using the latest available historical data.")["source"] == "chosen"
 bare_summa = "Run Summa for USGS gauge 09106150."
 bare_choice = interpret_realization(bare_summa, ["Summa"])
@@ -493,6 +533,7 @@ from nextgenhydro.realizations import read_realization
 from nextgenhydro.review import stated_output_dir
 from nextgenhydro.run_check import run_problems
 from nextgenhydro.setup_check import explain_failure
+from nextgenhydro.server import docker_uses_mount
 from nextgenhydro.nlp import interpret_evaluate
 
 summer = parse_request("Run 01646500 for summer 2019")
@@ -573,5 +614,8 @@ assert "forcing_medium_range" in explain_failure("Exception: https://noaa-nwm-pd
 assert "shared medium-range forcing" in explain_failure("NoSuchKey")
 assert explain_failure("raster calculated, executing exactextract\nsingle thread -> 3645 weights") == ""
 assert explain_failure("all fine") == ""
+assert docker_uses_mount("/tmp/run-a", "/tmp/run-a /var/lib/docker")
+assert docker_uses_mount("/tmp/run-a", "/tmp/run-a/ngen-run")
+assert not docker_uses_mount("/tmp/run-a", "/tmp/run-b /tmp/other")
 
 print("python checks ok")

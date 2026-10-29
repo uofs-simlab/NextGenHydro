@@ -141,8 +141,10 @@ def _missing_for_run(patch: dict) -> str:
 
 
 def _draft_models(draft: dict | None) -> list:
+    from .model_support import catalog_model_names
+
     raw = (draft or {}).get("models")
-    return raw if isinstance(raw, list) else []
+    return catalog_model_names(raw if isinstance(raw, list) else [])
 
 
 def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
@@ -205,8 +207,9 @@ def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
         patch["realization"] = chosen.get("realization") or patch.get("realization") or ""
         if chosen.get("note"):
             messages.append(chosen["note"])
-    elif action in {"run", "dry run"} and not patch.get("realization") and chosen.get("source") == "chosen":
-        patch["realization"] = chosen["realization"]
+    elif chosen.get("source") == "chosen":
+        if action in {"run", "dry run"} and not patch.get("realization"):
+            patch["realization"] = chosen["realization"]
         if chosen.get("note"):
             messages.append(chosen["note"])
     clock = hourly_clock_note(incoming.get("start") or parsed.get("start") or "", incoming.get("end") or parsed.get("end") or "")
@@ -259,6 +262,8 @@ def _follows_feedback(note: str, facts: list[str]) -> bool:
         "outside -180 to 180",
         "Forcing stays empty",
         "No model was named",
+        "modeling framework",
+        "not a catchment model",
         "not supported in this repo",
         "This is a forecast",
         "already in the past",
