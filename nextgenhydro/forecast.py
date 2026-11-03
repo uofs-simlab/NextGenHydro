@@ -59,6 +59,19 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
     if switched:
         lead = f"This is a forecast longer than 18 hours, so {product['label']} was chosen in place of short range"
     span = f"It runs {product['hours']} hours from {_iso(cycle).replace('T', ' ')} to {_iso(last_hour).replace('T', ' ')} UTC"
+    if asked_start and asked_start > last_hour:
+        bare = "NWM_V3_SHORT_RANGE" if kind == "short" else "NWM_V3_MEDIUM_RANGE"
+        return {
+            "ok": False,
+            "forcing": bare,
+            "start": start,
+            "end": end,
+            "message": (
+                f"{lead}. The newest forecast runs {product['hours']} hours from {_iso(cycle).replace('T', ' ')} "
+                f"to {_iso(last_hour).replace('T', ' ')} UTC, which ends before the requested start {start.replace('T', ' ')}, "
+                "so this run is not ready."
+            ),
+        }
     if now - cycle > timedelta(days=KEPT_DAYS):
         return {
             "ok": False,

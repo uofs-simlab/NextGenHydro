@@ -570,6 +570,7 @@ async function refreshStatus() {
 }
 
 let pageTimer = 0
+let pageRequest = 0
 let runAbort = null
 
 function setMapInteractive(on) {
@@ -729,8 +730,15 @@ function watershedLabel(phase) {
   return "Waiting"
 }
 
+function clearPageOutput() {
+  $("page-chart").hidden = true
+  $("page-chart").replaceChildren()
+  $("page-files").replaceChildren()
+}
+
 async function loadPage(page) {
   state.page = page
+  const request = ++pageRequest
   for (const button of document.querySelectorAll(".nav button")) button.classList.toggle("is-on", button.dataset.page === page)
   showStage(page)
   window.clearInterval(pageTimer)
@@ -741,16 +749,17 @@ async function loadPage(page) {
   $("page-note").textContent = ""
   $("page-body").textContent = ""
   $("copy-command").hidden = !["command", "logs", "live"].includes(page)
-  $("page-chart").hidden = true
-  $("page-chart").replaceChildren()
-  $("page-files").replaceChildren()
+  clearPageOutput()
   if (page === "command") {
     paintCommandPage()
     return
   }
   const paint = async () => {
-    if (state.page !== page) return
+    if (request !== pageRequest || state.page !== page) return
     const gage = state.request.gage
+    const outputDir = state.outputDir
+    const stillCurrent = () =>
+      request === pageRequest && state.page === page && state.request.gage === gage && state.outputDir === outputDir
     const ready = /^\d{7,15}$/.test(gage)
     if (page === "watershed") {
       if (!ready) {
@@ -759,7 +768,7 @@ async function loadPage(page) {
         return
       }
       const status = await fetch(`/api/watershed/status?gage=${gage}`).then((response) => response.json())
-      if (state.page !== page) return
+      if (!stillCurrent()) return
       state.watershedPhase = status.phase || ""
       paintMarks()
       $("page-state").textContent = watershedLabel(status.phase)
@@ -768,23 +777,24 @@ async function loadPage(page) {
       setPageBody(status.log || (status.phase === "preparing" ? "The watershed build output appears here." : ""))
       return
     }
-    if (!ready || !state.outputDir) {
+    if (!ready || !outputDir) {
       $("page-path").textContent = "Set a USGS gauge and an output folder to choose this path."
       setPageBody(page === "results" ? "Result files appear in this folder after the run writes them." : "The log appears here after a run writes it.")
+      clearPageOutput()
       return
     }
-    const query = `gage=${encodeURIComponent(gage)}&outputDir=${encodeURIComponent(state.outputDir)}`
+    const query = `gage=${encodeURIComponent(gage)}&outputDir=${encodeURIComponent(outputDir)}`
     if (page === "logs" || page === "live") {
       const path = page === "logs" ? "log" : "live"
       const body = await fetch(`/api/datastream/${path}?${query}`).then((response) => response.json())
-      if (state.page !== page) return
+      if (!stillCurrent()) return
       $("page-path").textContent = body.path || ""
       setPageBody(body.text || state.runOutput || (body.exists ? "The log is empty." : "The log appears here while DataStreamCLI writes it."))
     }
     if (page === "results") {
       const range = `start=${encodeURIComponent(state.request.start)}&end=${encodeURIComponent(state.request.end)}`
       const body = await fetch(`/api/datastream/result?${query}&${range}`).then((response) => response.json())
-      if (state.page !== page) return
+      if (!stillCurrent()) return
       $("page-path").textContent = body.path || ""
       $("page-body").textContent = ""
       paintHydrograph(body.hydrograph)
@@ -804,6 +814,7 @@ async function loadPage(page) {
     }
   }
   await paint()
+  if (request !== pageRequest) return
   pageTimer = window.setInterval(paint, 2000)
 }
 
@@ -856,6 +867,7 @@ function restoreAfterFailedAsk(previous) {
   setGages()
   setOutlet(previous.outlet)
   if (state.request.gage) drawWatershed(state.request.gage)
+  if (state.page !== "map") loadPage(state.page)
 }
 
 function clearForNewAsk() {
@@ -864,6 +876,7 @@ function clearForNewAsk() {
   state.request = { gage: "", start: "", end: "", forcing: "" }
   state.realization = ""
   state.realizationSpecified = false
+  state.outputDir = ""
   state.outlet = null
   state.gaugePoint = null
   state.outletPoint = null
@@ -878,11 +891,15 @@ function clearForNewAsk() {
   state.evaluate = false
   setGages()
   setOutlet(null)
-  paintForm()
-  if (state.runState !== "running") {
+  const running = state.runState === "running"
+  if (!running) {
     state.runMessage = null
     state.runState = "idle"
+    state.runCommand = null
+    state.runOutput = ""
   }
+  paintForm()
+  if (!running && state.page !== "map") loadPage(state.page)
 }
 
 let askToken = 0
@@ -912,7 +929,7 @@ $("ask").addEventListener("click", async () => {
         realization: "",
         lat: null,
         lng: null,
-        outputDir: previous.outputDir,
+        outputDir: "",
       }),
     })
     const body = await response.json()
@@ -925,7 +942,7 @@ $("ask").addEventListener("click", async () => {
     state.request = body.request
     state.realization = (body.runOptions && body.runOptions.realization) || ""
     state.realizationSpecified = Boolean(body.patch && body.patch.realization)
-    state.outputDir = (body.runOptions && body.runOptions.outputDir) || previous.outputDir
+    state.outputDir = (body.runOptions && body.runOptions.outputDir) || ""
     const gaugeFields = body.plan.gauge || {}
     const outletFields = body.plan.outlet || {}
     state.gaugePoint = gaugeFields["gauge latitude"] == null ? null : { lat: gaugeFields["gauge latitude"], lng: gaugeFields["gauge longitude"] }
@@ -948,6 +965,7 @@ $("ask").addEventListener("click", async () => {
       else map.flyTo({ center: [body.focus.lng, body.focus.lat], zoom: body.focus.zoom })
     }
     if (state.request.gage) drawWatershed(state.request.gage)
+    if (state.runState !== "running" && state.page !== "map") loadPage(state.page)
     if (state.action === "do not run" && state.note) setAskStatus(state.note, "error")
     else setAskStatus("")
   } catch {

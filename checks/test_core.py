@@ -472,6 +472,12 @@ short = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-23T18:00", "2026-10-24T06:0
 assert short["ok"] and short["forcing"] == "NWM_V3_SHORT_RANGE_17" and short["start"] == "2026-10-23T17:00"
 too_long = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-11-10T00:00", forecast_now)
 assert not too_long["ok"] and "ends before the requested end" in too_long["message"]
+future_now = _datetime(2026, 11, 3, 5, 0)
+future_start = plan_forecast("NWM_V3_MEDIUM_RANGE", "2027-10-24T00:00", "2027-10-27T00:00", future_now)
+assert not future_start["ok"]
+assert future_start["start"] == "2027-10-24T00:00" and future_start["end"] == "2027-10-27T00:00"
+assert future_start["forcing"] == "NWM_V3_MEDIUM_RANGE"
+assert "ends before the requested start 2027-10-24 00:00" in future_start["message"]
 old_start = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-20T00:00", "2026-10-24T00:00", forecast_now)
 assert old_start["ok"] and old_start["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert old_start["start"] == "2026-10-23T12:00"
@@ -490,6 +496,27 @@ forecast_review = review_plan(
 assert forecast_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert forecast_review["patch"]["action"] == "run"
 assert any("This is a forecast" in message for message in forecast_review["messages"])
+october_2027 = "Run a 72-hour hydrological forecast for USGS gage 03339000 starting October 24, 2027. Use a supported CFE model configuration."
+assert parse_request(october_2027)["start"] == "2027-10-24T00:00"
+assert parse_request(october_2027)["end"] == "2027-10-27T00:00"
+kept_start = review_plan(
+    october_2027,
+    {
+        "gage": "03339000",
+        "start": "2027-10-24T00:00",
+        "end": "2027-10-27T00:00",
+        "forcing": "NWM_V3_MEDIUM_RANGE",
+        "action": "run",
+        "realization": "realization_sloth_nom_cfe_pet.json",
+        "models": ["CFE"],
+    },
+    future_now,
+)
+assert kept_start["patch"]["start"] == "2027-10-24T00:00"
+assert kept_start["patch"]["end"] == "2027-10-27T00:00"
+assert kept_start["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE"
+assert kept_start["patch"]["action"] == "do not run"
+assert any("requested start 2027-10-24 00:00" in message for message in kept_start["messages"])
 past_review = review_plan(
     forecast_sentence,
     {"gage": "01646500", "start": "2026-10-24T00:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE", "action": "run", "models": []},

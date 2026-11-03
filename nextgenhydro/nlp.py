@@ -293,7 +293,7 @@ def agent_system_prompt() -> str:
             "A season means its months: spring is March to May, summer is June to August, fall is September to November, winter is December to February of the next year. A bare year means January 1 to December 31.",
             "When the sentence asks for a forecast, or the dates are today or later, and does not name a forcing, the run needs a forecast forcing. Use NWM_V3_SHORT_RANGE when the requested span is 18 hours or less and NWM_V3_MEDIUM_RANGE when it is longer. A 24-hour forecast uses NWM_V3_MEDIUM_RANGE.",
             "When the sentence asks for a forecast and the named end is already in the past, keep those dates, do not pick a forecast cycle, set action to do not run, and say the dates are already in the past so this time range is not for forecasting.",
-            "The app picks the newest forecast cycle for that product and explains the forecast length in the note. Do not write a cycle number yourself.",
+            "The app picks the newest forecast cycle when that forecast covers the named dates, and it explains the forecast length in the note. When the named start is after that forecast ends, keep the named start and end. Do not write a cycle number yourself.",
             "Leave forcing empty when the sentence does not ask for forcing, historical data, a forecast, or a workflow plan and has no dates.",
             f"realization must be one of: {choices}.",
             "When the sentence names Noah-OWP, CFE, or PET and does not ask for t-route or routing, use realization_sloth_nom_cfe_pet.json.",
