@@ -15,7 +15,7 @@ from nextgenhydro.model_support import check_models
 from nextgenhydro.review import check_dates, note_from_feedback, review_plan
 from nextgenhydro.realizations import DEFAULT_REALIZATION
 from nextgenhydro.repair_watershed_ids import repair_watershed_ids
-from nextgenhydro.parse_request import parse_request
+from nextgenhydro.parse_request import named_run_hours, parse_request
 from nextgenhydro.place_query import place_query_from_sentence
 
 denver = "Simulate a watershed near Denver using the latest available historical data."
@@ -551,9 +551,27 @@ bare_command = datastream_command(
 )
 assert not bare_command["ready"]
 assert "NWM_V3_MEDIUM_RANGE when it is longer" in agent_system_prompt()
-assert "not all 240 hours" in agent_system_prompt()
 assert "GFS meteorological forecasts" in agent_system_prompt()
 assert "Do not set forcing to NOMADS_OPERATIONAL" in agent_system_prompt()
+assert "not the 240-hour medium-range product" in agent_system_prompt()
+forty_eight = "Run a 48-hour NextGen streamflow forecast for USGS gauge 01646500."
+forty_eight_now = _datetime(2026, 11, 13, 18, 0)
+forty_eight_review = review_plan(
+    forty_eight,
+    {
+        "gage": "01646500",
+        "start": "2026-11-13T00:00",
+        "end": "2026-11-23T00:00",
+        "forcing": "NWM_V3_MEDIUM_RANGE",
+        "action": "run",
+        "models": [],
+    },
+    forty_eight_now,
+)
+assert forty_eight_review["patch"]["start"] == "2026-11-13T12:00"
+assert forty_eight_review["patch"]["end"] == "2026-11-15T12:00"
+assert forty_eight_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
+assert named_run_hours(forty_eight) == 48
 gfs_sentence = "Prepare a NextGen forecast using GFS meteorological forecasts for USGS gauge 03339000, covering Nov 9–16, 2026."
 assert parse_request(gfs_sentence)["forcing"] == "NWM_V3_MEDIUM_RANGE"
 assert parse_request("Download NOMADS operational forcing for USGS 03339000.")["forcing"] == "NOMADS_OPERATIONAL"
@@ -569,13 +587,35 @@ gfs_review = review_plan(
 )
 assert gfs_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert gfs_review["patch"]["action"] == "run"
-assert any("GFS and NOMADS" in message for message in gfs_review["messages"])
+assert any("GFS is the NOAA" in message for message in gfs_review["messages"])
 gfs_command = datastream_command(
     {"gage": "03339000", "start": gfs_review["patch"]["start"], "end": gfs_review["patch"]["end"], "forcing": gfs_review["patch"]["forcing"]},
     {"outputDir": "./data/gfs", "realization": DEFAULT_REALIZATION, "nprocs": 4},
 )
 assert gfs_command["argv"][:4] == ["-s", "202611100100", "-e", "202611160000"]
 assert gfs_command["argv"][gfs_command["argv"].index("-C") + 1] == "NWM_V3_MEDIUM_RANGE_12_0"
+hrrr_sentence = "Use HRRR forecast forcing to generate a 12-hour streamflow forecast for USGS gauge 01646500, if the forcing is available and compatible with the model."
+assert parse_request(hrrr_sentence)["forcing"] == "NWM_V3_SHORT_RANGE"
+assert forcing_from_live_weather(hrrr_sentence, "NWM_V3_SHORT_RANGE", "2026-11-13T18:00", "2026-11-14T06:00") == "NWM_V3_SHORT_RANGE"
+assert "HRRR (High-Resolution Rapid Refresh)" in agent_system_prompt()
+hrrr_now = _datetime(2026, 11, 13, 20, 0)
+hrrr_review = review_plan(
+    hrrr_sentence,
+    {
+        "gage": "01646500",
+        "start": "2026-11-13T18:00",
+        "end": "2026-11-14T06:00",
+        "forcing": "NWM_V3_SHORT_RANGE",
+        "action": "run",
+        "models": [],
+    },
+    hrrr_now,
+)
+assert hrrr_review["patch"]["forcing"] == "NWM_V3_SHORT_RANGE_18"
+assert hrrr_review["patch"]["start"] == "2026-11-13T18:00"
+assert hrrr_review["patch"]["end"] == "2026-11-14T06:00"
+assert any("HRRR (High-Resolution Rapid Refresh)" in message for message in hrrr_review["messages"])
+assert any("compatible NextGen dataset" in message for message in hrrr_review["messages"])
 assert "already in the past" in agent_system_prompt()
 assert "not for forecasting" in agent_system_prompt()
 assert "forecast window has already ended" in agent_system_prompt()

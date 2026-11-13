@@ -225,6 +225,8 @@ def read_forcing(text: str) -> str:
         return "NWM_V3_SHORT_RANGE"
     if re.search(r"\bmedium[\s-]*range\b", value):
         return "NWM_V3_MEDIUM_RANGE"
+    if re.search(r"\bhrrr\b", value):
+        return "NWM_V3_SHORT_RANGE"
     if re.search(r"\bgfs\b", value):
         return "NWM_V3_MEDIUM_RANGE"
     if re.search(r"\banalysis(?:\s+and|\s*&\s*|\s+)assimilation\b", value):
@@ -386,6 +388,21 @@ def parse_request(text: str) -> dict:
         "end": end,
         "forcing": forcing if is_forcing_id(forcing) or forcing == "" else "",
     }
+
+
+def named_run_hours(text: str) -> int | None:
+    match = re.search(r"\b(\d+)\s*-?\s*(hour|hr|day|week)s?\b", WARMUP_PATTERN.sub(" ", text or ""), re.I)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    if amount < 1:
+        return None
+    unit = match.group(2).lower()
+    if unit.startswith("hour") or unit == "hr":
+        return amount
+    if unit.startswith("week"):
+        return amount * 24 * 7
+    return amount * 24
 
 
 def to_datastream_time(iso: str) -> str:

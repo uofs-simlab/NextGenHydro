@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from .agent import EMPTY_PATCH, is_gage_id, named_location, sanitize_agent_patch
 from .forcings import coverage_problem
-from .forecast import forcing_from_live_weather, plan_forecast
+from .forecast import forcing_from_live_weather, plan_forecast, weather_dataset_note
 from .model_support import check_models
 from .nlp import interpret_action, interpret_logging, interpret_realization
 from .parse_request import align_hourly_time, hourly_clock_note, parse_request
@@ -190,11 +190,10 @@ def review_plan(sentence: str, draft: dict | None = None, now=None) -> dict:
         weather = forcing_from_live_weather(sentence, patch.get("forcing") or "", patch["start"], patch["end"])
         if weather != (patch.get("forcing") or "") and weather in {"NWM_V3_SHORT_RANGE", "NWM_V3_MEDIUM_RANGE"}:
             patch["forcing"] = weather
-            kind = "medium range" if weather == "NWM_V3_MEDIUM_RANGE" else "short range"
-            messages.append(
-                f"GFS and NOMADS meteorological forecasts use National Water Model v3 {kind}, which is the same NWM {kind} forcing NOMADS publishes."
-            )
-        forecast = plan_forecast(patch.get("forcing") or "", patch["start"], patch["end"], now)
+        dataset = weather_dataset_note(sentence)
+        if dataset:
+            messages.append(dataset)
+        forecast = plan_forecast(patch.get("forcing") or "", patch["start"], patch["end"], now, sentence)
         if forecast:
             patch["forcing"] = forecast["forcing"]
             patch["start"] = forecast["start"]
@@ -278,6 +277,9 @@ def _follows_feedback(note: str, facts: list[str]) -> bool:
         "nearest NextGen gauge",
         "No NextGen gauge was found",
         "AORC",
+        "HRRR",
+        "GFS is the NOAA",
+        "NOMADS serves",
         "forcing covers",
         "before Run",
         "Output folder",

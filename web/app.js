@@ -232,7 +232,9 @@ function waitWindowText() {
   const files = forcingFileCount()
   const hours = runHours()
   const days = hours / 24
-  const daysText = days >= 2 ? `${days.toFixed(days >= 10 ? 0 : 1).replace(/\.0$/, "")} days` : `${Math.round(hours)} hours`
+  const daysText = hours >= 72
+    ? `${days.toFixed(days >= 10 ? 0 : 1).replace(/\.0$/, "")} days`
+    : `${Math.round(hours)} hours`
   const warmup = Math.max(0, Number(state.warmupDays) || 0)
   const warm = warmup ? ` including ${warmup} warm-up days` : ""
   return `${daysText}${warm}, ${files.toLocaleString("en-US")} hourly weather files`
@@ -296,7 +298,8 @@ function paintWait() {
     const longStep = document.createElement("p")
     if (isForecastForcing(state.request.forcing)) {
       const medium = /MEDIUM_RANGE/.test(state.request.forcing || "")
-      longStep.textContent = medium && runHours() < 240
+      const warmupHours = Math.max(0, Number(state.warmupDays) || 0) * 24
+      longStep.textContent = medium && (runHours() - warmupHours) < 230
         ? "Downloading National Water Model forecast hours through this end date is usually the long step. Later hours of the 240-hour product are skipped."
         : "Downloading National Water Model forecast hours is usually the long step, then NextGen runs."
     } else {
