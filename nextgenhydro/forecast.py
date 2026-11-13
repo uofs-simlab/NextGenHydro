@@ -1,6 +1,9 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from .forcings import forecast_kind
+
+LIVE_FORECAST_FORCINGS = {"NOMADS_OPERATIONAL", "NWM_OPERATIONAL_V3"}
 
 PRODUCTS = {
     "short": {"hours": 18, "every": 1, "ready_after": 2, "label": "National Water Model v3 short range"},
@@ -28,6 +31,24 @@ def _forcing_id(kind: str, cycle: datetime) -> str:
     if kind == "short":
         return f"NWM_V3_SHORT_RANGE_{cycle.hour:02d}"
     return f"NWM_V3_MEDIUM_RANGE_{cycle.hour:02d}_0"
+
+
+def forcing_from_live_weather(sentence: str, forcing: str, start: str = "", end: str = "") -> str:
+    named = forcing or ""
+    text = sentence or ""
+    gfs = bool(re.search(r"\bgfs\b", text, re.I))
+    nomads = named == "NOMADS_OPERATIONAL" or bool(re.search(r"\bnomads\b", text, re.I))
+    operational = named == "NWM_OPERATIONAL_V3"
+    forecast = bool(re.search(r"\bforecast", text, re.I))
+    if gfs:
+        return "NWM_V3_MEDIUM_RANGE"
+    if not forecast or not (nomads or operational or named in LIVE_FORECAST_FORCINGS):
+        return named
+    asked_start, asked_end = _parse(start), _parse(end)
+    hours = (asked_end - asked_start).total_seconds() / 3600 if asked_start and asked_end else 0
+    if 0 < hours <= PRODUCTS["short"]["hours"]:
+        return "NWM_V3_SHORT_RANGE"
+    return "NWM_V3_MEDIUM_RANGE"
 
 
 def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = None) -> dict | None:
@@ -58,7 +79,7 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
     lead = f"This is a forecast, so {product['label']} was chosen"
     if switched:
         lead = f"This is a forecast longer than 18 hours, so {product['label']} was chosen in place of short range"
-    span = f"It runs {product['hours']} hours from {_iso(cycle).replace('T', ' ')} to {_iso(last_hour).replace('T', ' ')} UTC"
+    span = f"The product covers {product['hours']} hours from {_iso(cycle).replace('T', ' ')} to {_iso(last_hour).replace('T', ' ')} UTC"
     if asked_start and asked_start > last_hour:
         bare = "NWM_V3_SHORT_RANGE" if kind == "short" else "NWM_V3_MEDIUM_RANGE"
         return {
@@ -89,10 +110,13 @@ def plan_forecast(forcing: str, start: str, end: str, now: datetime | None = Non
             "message": f"{lead}: the forecast issued {issued}. {span}, which ends before the requested end {end.replace('T', ' ')}, so this run is not ready.",
         }
     covers = f", which covers the requested end {end.replace('T', ' ')}" if asked_end else ""
+    trim = ""
+    if asked_end and asked_end < last_hour:
+        trim = " This run downloads forecast hours through that end, not the unused later hours."
     return {
         "ok": True,
         "forcing": forcing_id,
         "start": _iso(cycle),
         "end": end or _iso(last_hour),
-        "message": f"{lead}: the newest forecast issued {issued}. {span}{covers}. Start is the forecast issue time.",
+        "message": f"{lead}: the newest forecast issued {issued}. {span}{covers}.{trim} Start is the forecast issue time.",
     }

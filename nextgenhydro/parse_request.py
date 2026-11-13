@@ -225,11 +225,15 @@ def read_forcing(text: str) -> str:
         return "NWM_V3_SHORT_RANGE"
     if re.search(r"\bmedium[\s-]*range\b", value):
         return "NWM_V3_MEDIUM_RANGE"
+    if re.search(r"\bgfs\b", value):
+        return "NWM_V3_MEDIUM_RANGE"
     if re.search(r"\banalysis(?:\s+and|\s*&\s*|\s+)assimilation\b", value):
         return "NWM_V3_ANALYSIS_ASSIM"
     if re.search(r"\b(?:retrospective|retro)\b", value):
         return "NWM_RETRO_V3"
     if re.search(r"\bnomads\b", value):
+        if re.search(r"\bforecast", value):
+            return "NWM_V3_MEDIUM_RANGE"
         return "NOMADS_OPERATIONAL"
     if re.search(r"\boperational\b", value):
         return "NWM_OPERATIONAL_V3"

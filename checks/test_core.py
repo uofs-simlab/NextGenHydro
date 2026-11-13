@@ -466,6 +466,7 @@ day_forecast = plan_forecast("NWM_V3_MEDIUM_RANGE", "2026-10-24T00:00", "2026-10
 assert day_forecast["ok"] and day_forecast["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert day_forecast["start"] == "2026-10-23T12:00" and day_forecast["end"] == "2026-10-25T00:00"
 assert "240 hours" in day_forecast["message"]
+assert "through that end" in day_forecast["message"]
 switched = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-24T00:00", "2026-10-25T00:00", forecast_now)
 assert switched["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0" and "in place of short range" in switched["message"]
 short = plan_forecast("NWM_V3_SHORT_RANGE", "2026-10-23T18:00", "2026-10-24T06:00", forecast_now)
@@ -540,15 +541,41 @@ forecast_command = datastream_command(
     {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE_12_1"},
     {"outputDir": "./data/forecast", "realization": DEFAULT_REALIZATION, "nprocs": 4},
 )
-assert forecast_command["argv"][:4] == ["-s", "202610230100", "-e", "202610230100"]
+assert forecast_command["argv"][:4] == ["-s", "202610230100", "-e", "202610250000"]
 assert "-C" in forecast_command["argv"] and forecast_command["argv"][forecast_command["argv"].index("-C") + 1] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert forecast_command["ready"]
+assert "through that end" in forecast_command["note"]
 bare_command = datastream_command(
     {"gage": "01646500", "start": "2026-10-23T12:00", "end": "2026-10-25T00:00", "forcing": "NWM_V3_MEDIUM_RANGE"},
     {"outputDir": "./data/forecast", "realization": DEFAULT_REALIZATION, "nprocs": 4},
 )
 assert not bare_command["ready"]
 assert "NWM_V3_MEDIUM_RANGE when it is longer" in agent_system_prompt()
+assert "not all 240 hours" in agent_system_prompt()
+assert "GFS meteorological forecasts" in agent_system_prompt()
+assert "Do not set forcing to NOMADS_OPERATIONAL" in agent_system_prompt()
+gfs_sentence = "Prepare a NextGen forecast using GFS meteorological forecasts for USGS gauge 03339000, covering Nov 9–16, 2026."
+assert parse_request(gfs_sentence)["forcing"] == "NWM_V3_MEDIUM_RANGE"
+assert parse_request("Download NOMADS operational forcing for USGS 03339000.")["forcing"] == "NOMADS_OPERATIONAL"
+assert parse_request("Prepare a NextGen forecast using NOMADS for USGS gauge 03339000.")["forcing"] == "NWM_V3_MEDIUM_RANGE"
+from nextgenhydro.forecast import forcing_from_live_weather
+assert forcing_from_live_weather(gfs_sentence, "NOMADS_OPERATIONAL", "2026-11-09T00:00", "2026-11-16T00:00") == "NWM_V3_MEDIUM_RANGE"
+assert forcing_from_live_weather("Use NOMADS operational.", "NOMADS_OPERATIONAL", "2026-11-09T00:00", "2026-11-10T00:00") == "NOMADS_OPERATIONAL"
+gfs_now = _datetime(2026, 11, 10, 18, 0)
+gfs_review = review_plan(
+    gfs_sentence,
+    {"gage": "03339000", "start": "2026-11-09T00:00", "end": "2026-11-16T00:00", "forcing": "NOMADS_OPERATIONAL", "action": "run", "models": []},
+    gfs_now,
+)
+assert gfs_review["patch"]["forcing"] == "NWM_V3_MEDIUM_RANGE_12_0"
+assert gfs_review["patch"]["action"] == "run"
+assert any("GFS and NOMADS" in message for message in gfs_review["messages"])
+gfs_command = datastream_command(
+    {"gage": "03339000", "start": gfs_review["patch"]["start"], "end": gfs_review["patch"]["end"], "forcing": gfs_review["patch"]["forcing"]},
+    {"outputDir": "./data/gfs", "realization": DEFAULT_REALIZATION, "nprocs": 4},
+)
+assert gfs_command["argv"][:4] == ["-s", "202611100100", "-e", "202611160000"]
+assert gfs_command["argv"][gfs_command["argv"].index("-C") + 1] == "NWM_V3_MEDIUM_RANGE_12_0"
 assert "already in the past" in agent_system_prompt()
 assert "not for forecasting" in agent_system_prompt()
 assert "forecast window has already ended" in agent_system_prompt()

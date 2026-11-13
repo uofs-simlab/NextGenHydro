@@ -26,6 +26,8 @@ const state = {
   watershedStats: null,
   warmupDays: 30,
   evaluate: false,
+  runStartedAt: 0,
+  runFinishedAt: 0,
 }
 
 const $ = (id) => document.getElementById(id)
@@ -145,7 +147,185 @@ function paintRun() {
     box.append(text)
   }
   box.hidden = box.childElementCount === 0
+  paintWait()
   paintMarks()
+}
+
+let waitTimer = 0
+
+function runHours() {
+  const start = Date.parse(`${state.request.start}:00Z`)
+  const end = Date.parse(`${state.request.end}:00Z`)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 24
+  const warmup = Math.max(0, Number(state.warmupDays) || 0)
+  return (end - start) / 3600000 + warmup * 24
+}
+
+function forcingFileCount() {
+  return Math.max(1, Math.round(runHours()) + 1)
+}
+
+function isForecastForcing(id) {
+  return /^NWM_V3_(SHORT|MEDIUM)_RANGE/.test(id || "")
+}
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+  return `${minutes}:${String(seconds).padStart(2, "0")}`
+}
+
+function runStep(log) {
+  const text = log || ""
+  if (/Running NextGen in AUTO MODE|CIROH-UA\/NGIAB-CloudInfra/i.test(text)) {
+    if (/TEEHR DOCKER/i.test(text)) return "teehr"
+    return "ngen"
+  }
+  if (/Validating\s+\./.test(text) || /Validating required individual catchment paths/.test(text)) return "validate"
+  if (/Creating forcing files|ForcingProcessor has awoken|Obtaining weights|Downloading file/i.test(text)) return "forcing"
+  if (/Generating NGEN configs|Generating NoahOWP|Generating CFE|Generating PET|Generating t-route|Generating DataStreamCLI metadata/i.test(text)) return "configs"
+  if (/Building the watershed|uvx.*ngiab-prep|Watershed subset failed/i.test(text) && !/Watershed geopackage is already|Watershed geopackage written/i.test(text)) return "watershed"
+  if (/Image Tags|Running datastream with max/i.test(text)) return "datastream"
+  if (state.watershedPhase === "ready") return "start"
+  return "watershed"
+}
+
+function typicalWait(step) {
+  const hours = runHours()
+  const files = forcingFileCount()
+  const forecast = isForecastForcing(state.request.forcing)
+  const needsWatershed = state.watershedPhase !== "ready"
+  const cats = state.watershedStats && state.watershedStats.gage === state.request.gage ? state.watershedStats.catchments : 150
+  const ngenMin = Math.max(2, Math.round((cats * hours) / 25000) + (forecast ? 4 : 2))
+  const ngenMax = Math.max(8, Math.round((cats * hours) / 8000) + (forecast ? 12 : 8))
+  const forcingMin = forecast ? Math.max(2, Math.round(files / 80)) : Math.max(3, Math.round(files / 50))
+  const forcingMax = forecast ? Math.max(8, Math.round(files / 20)) : Math.max(10, Math.round(files / 12))
+  const rest = (nMin, nMax) => ({
+    min: nMin + (state.evaluate ? 3 : 0) + (needsWatershed && !step ? 10 : 0),
+    max: nMax + (state.evaluate ? 10 : 0) + (needsWatershed && !step ? 30 : 0),
+  })
+  if (step === "watershed") return rest(10 + ngenMin + forcingMin, 30 + ngenMax + forcingMax)
+  if (step === "configs" || step === "datastream" || step === "start") return rest(1 + ngenMin + forcingMin, 4 + ngenMax + forcingMax)
+  if (step === "forcing") return rest(ngenMin + forcingMin, ngenMax + forcingMax)
+  if (step === "validate") return rest(ngenMin, ngenMax + 2)
+  if (step === "ngen") return rest(Math.max(2, ngenMin), ngenMax)
+  if (step === "teehr") return { min: 3, max: 10 }
+  return rest(ngenMin + forcingMin + 1, ngenMax + forcingMax + 3)
+}
+
+function waitRangeText(range) {
+  const min = Math.max(1, range.min)
+  const max = Math.max(min + 1, range.max)
+  if (max >= 120) {
+    const minH = (min / 60).toFixed(min >= 60 ? 0 : 1).replace(/\.0$/, "")
+    const maxH = (max / 60).toFixed(max >= 90 ? 0 : 1).replace(/\.0$/, "")
+    return `about ${minH}–${maxH} hours`
+  }
+  if (max <= 2) return "about 1–2 minutes"
+  return `about ${min}–${max} minutes`
+}
+
+function waitWindowText() {
+  const files = forcingFileCount()
+  const hours = runHours()
+  const days = hours / 24
+  const daysText = days >= 2 ? `${days.toFixed(days >= 10 ? 0 : 1).replace(/\.0$/, "")} days` : `${Math.round(hours)} hours`
+  const warmup = Math.max(0, Number(state.warmupDays) || 0)
+  const warm = warmup ? ` including ${warmup} warm-up days` : ""
+  return `${daysText}${warm}, ${files.toLocaleString("en-US")} hourly weather files`
+}
+
+function stepLabel(step) {
+  return {
+    watershed: "Building the watershed",
+    datastream: "Starting DataStreamCLI",
+    configs: "Writing model configs",
+    forcing: "Downloading weather",
+    validate: "Checking files",
+    ngen: "Running NextGen",
+    teehr: "Evaluating with TEEHR",
+    start: "Starting",
+  }[step] || "Working"
+}
+
+function paintWait() {
+  const box = $("wait")
+  const running = state.runState === "running"
+  const canEstimate = Boolean(state.request.gage && state.request.start && state.request.end && state.request.forcing)
+  const elapsedMs = state.runStartedAt ? (state.runFinishedAt || Date.now()) - state.runStartedAt : 0
+  if (!running && state.runState !== "idle" && state.runState !== "done" && state.runState !== "error" && state.runState !== "stopped") {
+    box.hidden = true
+    return
+  }
+  if (!running && state.runState === "idle" && !canEstimate) {
+    box.hidden = true
+    return
+  }
+  const step = runStep(state.runOutput)
+  const range = typicalWait(running ? step : "")
+  const lines = []
+  const title = document.createElement("strong")
+  title.textContent = "Time to results"
+  if (running) {
+    const elapsed = document.createElement("p")
+    elapsed.className = "wait-elapsed"
+    elapsed.textContent = `Elapsed ${formatElapsed(elapsedMs)}. Now: ${stepLabel(step)}.`
+    const remain = document.createElement("p")
+    remain.textContent = `Typical remaining: ${waitRangeText(range)}. Stay until Live log says Finished, then open Results.`
+    lines.push(title, elapsed, remain)
+  } else if (state.runState === "done") {
+    const done = document.createElement("p")
+    done.textContent = elapsedMs
+      ? `Finished in ${formatElapsed(elapsedMs)}. Open Results for the hydrograph and files.`
+      : "Finished. Open Results for the hydrograph and files."
+    lines.push(title, done)
+  } else if (state.runState === "error" || state.runState === "stopped") {
+    const ended = document.createElement("p")
+    ended.textContent = elapsedMs
+      ? `Stopped after ${formatElapsed(elapsedMs)}. ${state.runState === "error" ? "Read the Live log for the last step." : "The output folder keeps what was written before Stop."}`
+      : state.runState === "error"
+        ? "Read the Live log for the last step."
+        : "The output folder keeps what was written before Stop."
+    lines.push(title, ended)
+  } else {
+    const windowLine = document.createElement("p")
+    windowLine.textContent = `This window is ${waitWindowText()}.`
+    const longStep = document.createElement("p")
+    if (isForecastForcing(state.request.forcing)) {
+      const medium = /MEDIUM_RANGE/.test(state.request.forcing || "")
+      longStep.textContent = medium && runHours() < 240
+        ? "Downloading National Water Model forecast hours through this end date is usually the long step. Later hours of the 240-hour product are skipped."
+        : "Downloading National Water Model forecast hours is usually the long step, then NextGen runs."
+    } else {
+      longStep.textContent = "Downloading NWM retrospective CONUS weather files, then extracting this basin, is usually the long step. NextGen itself is shorter after that."
+    }
+    const preview = document.createElement("p")
+    const watershed = state.watershedPhase === "ready"
+      ? "This watershed file is already on disk."
+      : "The first watershed for a gauge often takes 10 minutes or more."
+    preview.textContent = `Typical wait after Run: ${waitRangeText(range)}. ${watershed} Open Live log while it runs. Results appear when it finishes.`
+    lines.push(title, windowLine, longStep, preview)
+  }
+  box.replaceChildren(...lines)
+  box.hidden = false
+}
+
+function startWaitClock() {
+  window.clearInterval(waitTimer)
+  waitTimer = window.setInterval(() => {
+    if (state.runState !== "running") {
+      window.clearInterval(waitTimer)
+      paintWait()
+      return
+    }
+    paintWait()
+    if (state.page === "live") {
+      $("page-state").textContent = `${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))} · ${stepLabel(runStep(state.runOutput))}`
+    }
+  }, 1000)
 }
 
 function showForcingOption(id) {
@@ -790,6 +970,9 @@ async function loadPage(page) {
       if (!stillCurrent()) return
       $("page-path").textContent = body.path || ""
       setPageBody(body.text || state.runOutput || (body.exists ? "The log is empty." : "The log appears here while DataStreamCLI writes it."))
+      if (page === "live" && state.runState === "running" && state.runStartedAt) {
+        $("page-state").textContent = `${formatElapsed(Date.now() - state.runStartedAt)} · ${stepLabel(runStep(body.text || state.runOutput))}`
+      }
     }
     if (page === "results") {
       const range = `start=${encodeURIComponent(state.request.start)}&end=${encodeURIComponent(state.request.end)}`
@@ -915,7 +1098,7 @@ $("ask").addEventListener("click", async () => {
   $("ask").disabled = true
   clearForNewAsk()
   setAskStatus("Reading the sentence.")
-  const slow = window.setTimeout(() => setAskStatus("Finding the place and nearby NextGen gauges. This can take 10 seconds."), 3000)
+  const slow = window.setTimeout(() => setAskStatus("The agent is reading the sentence and filling the plan. This often takes 20–45 seconds."), 3000)
   try {
     const response = await fetch("/api/ask", {
       method: "POST",
@@ -1007,8 +1190,11 @@ $("run").addEventListener("click", async () => {
   state.runState = "running"
   state.stopRequested = false
   state.runOutput = ""
+  state.runStartedAt = Date.now()
+  state.runFinishedAt = 0
   state.runMessage = { kind: "info", text: "Running. Open the Live log to follow each step." }
   paintRun()
+  startWaitClock()
   runAbort = new AbortController()
   let response
   try {
@@ -1024,12 +1210,16 @@ $("run").addEventListener("click", async () => {
       state.runState = outcome.runState
       state.runMessage = outcome.message
       state.stopRequested = false
+      state.runFinishedAt = Date.now()
+      window.clearInterval(waitTimer)
       if (state.page === "live" || state.page === "logs") loadPage(state.page)
       paintRun()
       return
     }
     state.runState = "idle"
     state.runMessage = { kind: "error", text: "The app server did not answer. Is python3 app.py still running?" }
+    state.runFinishedAt = Date.now()
+    window.clearInterval(waitTimer)
     paintRun()
     return
   }
@@ -1037,6 +1227,8 @@ $("run").addEventListener("click", async () => {
     const text = (await response.text()).trim()
     state.runState = "idle"
     state.runMessage = { kind: "error", text: text || `The server refused the run (HTTP ${response.status}).` }
+    state.runFinishedAt = Date.now()
+    window.clearInterval(waitTimer)
     paintRun()
     return
   }
@@ -1055,6 +1247,8 @@ $("run").addEventListener("click", async () => {
   state.runState = outcome.runState
   state.runMessage = outcome.message
   state.stopRequested = false
+  state.runFinishedAt = Date.now()
+  window.clearInterval(waitTimer)
   if (state.page === "live" || state.page === "logs") loadPage(state.page)
   paintRun()
   checkRun()
@@ -1133,6 +1327,8 @@ $("stop").addEventListener("click", () => {
   if (state.runState !== "running") return
   state.stopRequested = true
   state.runState = "stopped"
+  state.runFinishedAt = Date.now()
+  window.clearInterval(waitTimer)
   state.runMessage = { kind: "info", text: "Stopped. The output folder keeps what was written before Stop." }
   paintRun()
   fetch("/api/datastream/stop", { method: "POST" }).catch(() => {})

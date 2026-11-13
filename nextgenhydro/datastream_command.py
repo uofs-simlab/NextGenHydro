@@ -26,7 +26,7 @@ def datastream_command(request: dict, options: dict) -> dict | None:
     warmup = 0 if forecast else warmup_days(options.get("warmupDays"))
     if has_forecast_cycle(forcing):
         issue_day = start[:8] + "0100"
-        argv = ["-s", issue_day, "-e", issue_day]
+        argv = ["-s", issue_day, "-e", end]
     else:
         argv = ["-s", to_datastream_time(warmup_start(start_iso, warmup)), "-e", end]
     if forcing:
@@ -66,7 +66,7 @@ def datastream_command(request: dict, options: dict) -> dict | None:
     elif cycle_missing:
         note = "A forecast forcing needs its issue cycle. Ask the agent for the forecast so it picks the newest cycle, so this command is not ready."
     elif forecast:
-        note = "Run builds this watershed with NGIAB Data Preprocess when the file is missing, then starts this command in the datastreamcli folder. -s and -e are the forecast issue day at 01:00 so the realization clock matches the first NWM forcing hour. DataStreamCLI adds the cycle hour and runs the whole forecast."
+        note = "Run builds this watershed with NGIAB Data Preprocess when the file is missing, then starts this command in the datastreamcli folder. -s is the forecast issue day at 01:00 so the realization clock matches the first NWM forcing hour. -e is the requested end. DataStreamCLI adds the cycle hour and downloads only forecast hours through that end."
         if dry_run:
             note = "This is a dry run. DataStreamCLI starts with -y True, writes the setup, and skips forcing generation, BMI configuration, validation, and the NextGen execution."
     else:
